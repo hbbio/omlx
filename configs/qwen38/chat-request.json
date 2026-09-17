@@ -1,0 +1,16 @@
+{
+  "model": "Qwen3.8-27B-oQ4e-mtp",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Find the smallest positive integer divisible by every integer from 1 through 20. Explain your reasoning."
+    }
+  ],
+  "enable_thinking": true,
+  "reasoning_effort": "high",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "max_tokens": 8192,
+  "stream": true
+}

@@ -98,6 +98,9 @@ temp/
 # MLX cache
 .mlx_cache/
 
+# Local Qwen launch profile: runtime settings, caches, and logs
+.omlx-qwen38/
+
 # Build artifacts
 *.dmg
 

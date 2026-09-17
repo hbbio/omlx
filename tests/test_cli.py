@@ -103,42 +103,11 @@ class TestLifecycleCommand:
         values.update(overrides)
         return SimpleNamespace(**values)
 
-    def test_app_bundle_stop_without_running_app_is_success(self, monkeypatch, capsys):
-        """`omlx stop` must not launch the macOS app just to stop it."""
-        from omlx import cli
-        import omlx.utils.install as install
-
-        monkeypatch.setattr(install, "is_app_bundle", lambda: True)
-        monkeypatch.setattr(install, "is_homebrew", lambda: False)
-        monkeypatch.setattr(cli, "_send_app_control", MagicMock(side_effect=OSError))
-        monkeypatch.setattr(cli, "_open_macos_app", MagicMock())
-
-        assert cli.lifecycle_command(self._args("stop")) == 0
-        assert capsys.readouterr().out.strip() == "oMLX stopped"
-        cli._open_macos_app.assert_not_called()
-
-    def test_app_bundle_start_sends_command_and_waits(self, monkeypatch):
-        """`omlx start` asks the app to start and waits for a running state."""
-        from omlx import cli
-        import omlx.utils.install as install
-
-        monkeypatch.setattr(install, "is_app_bundle", lambda: True)
-        monkeypatch.setattr(install, "is_homebrew", lambda: False)
-        send = MagicMock(return_value={"ok": True, "state": "starting", "port": 8000})
-        wait = MagicMock(return_value={"ok": True, "state": "running", "port": 8000})
-        monkeypatch.setattr(cli, "_send_app_control_with_launch", send)
-        monkeypatch.setattr(cli, "_wait_app_control_state", wait)
-
-        assert cli.lifecycle_command(self._args("start")) == 0
-        send.assert_called_once_with("start", timeout=1.0)
-        wait.assert_called_once_with({"running", "unresponsive"}, 1.0)
-
     def test_homebrew_start_delegates_to_brew_services(self, monkeypatch):
         """Homebrew installs use the Homebrew service supervisor."""
         from omlx import cli
         import omlx.utils.install as install
 
-        monkeypatch.setattr(install, "is_app_bundle", lambda: False)
         monkeypatch.setattr(install, "is_homebrew", lambda: True)
         run_brew = MagicMock(return_value=0)
         monkeypatch.setattr(cli, "_run_brew_services", run_brew)

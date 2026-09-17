@@ -99,9 +99,6 @@ temp/
 .mlx_cache/
 
 # Build artifacts
-packaging/_wheels/
-packaging/_export/
-packaging/_build/
 *.dmg
 
 # Generated engine commit metadata (build-time artifact)

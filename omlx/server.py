@@ -4765,15 +4765,6 @@ def _compile_grammar_for_request(
                     "Structured output requires xgrammar. "
                     "Reinstall with: brew reinstall omlx --with-grammar"
                 )
-            elif method == "dmg":
-                # DMG bundles xgrammar with a torch stub; reaching this
-                # branch means the bundled load failed (e.g. native binding
-                # incompatibility). Surface it instead of pointing users to
-                # a different install method.
-                detail = (
-                    "Structured output is unavailable: xgrammar failed to "
-                    "load in this build. Please report this issue."
-                )
             else:
                 detail = (
                     "Structured output requires xgrammar. "

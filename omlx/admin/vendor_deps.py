@@ -9,18 +9,23 @@ Usage:
     python vendor_deps.py
 """
 
+import hashlib
+import json
 import re
 import ssl
 import urllib.request
 from pathlib import Path
 
 STATIC = Path(__file__).parent / "static"
+VENDOR_LOCK = json.loads((Path(__file__).parent / "vendor-lock.json").read_text())
 
 # SSL context for HTTPS downloads
 SSL_CTX = ssl.create_default_context()
 
 
-def _download(url: str, dest: Path, description: str = "", optional: bool = False) -> bool:
+def _download(
+    url: str, dest: Path, description: str = "", optional: bool = False
+) -> bool:
     """Download a file from URL to destination path.
 
     Args:
@@ -30,15 +35,27 @@ def _download(url: str, dest: Path, description: str = "", optional: bool = Fals
         True if downloaded or already exists, False if skipped.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    relative = dest.relative_to(STATIC).as_posix()
+    locked = VENDOR_LOCK.get(relative)
+    if locked is None or locked["url"] != url:
+        raise RuntimeError(
+            f"No reviewed download hash for {relative}: update vendor-lock.json"
+        )
     if dest.exists():
-        print(f"  [skip] {dest.name} (already exists)")
+        digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+        if digest != locked["sha256"]:
+            raise RuntimeError(f"Integrity check failed for {relative}")
+        print(f"  [skip] {dest.name} (verified)")
         return True
     label = description or dest.name
     print(f"  [download] {label} <- {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, context=SSL_CTX) as resp:
-            dest.write_bytes(resp.read())
+            data = resp.read()
+        if hashlib.sha256(data).hexdigest() != locked["sha256"]:
+            raise RuntimeError(f"Integrity check failed for {relative}")
+        dest.write_bytes(data)
         return True
     except urllib.error.HTTPError as e:
         if optional and e.code == 404:
@@ -66,9 +83,9 @@ JS_DEPS = {
     "js/hljs-javascript.min.js": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js",
     "js/hljs-bash.min.js": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js",
     "js/hljs-json.min.js": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js",
-    # KaTeX 0.16.9 (MIT)
-    "js/katex.min.js": "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js",
-    "js/katex-auto-render.min.js": "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js",
+    # KaTeX 0.18.7 (MIT)
+    "js/katex.min.js": "https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/katex.min.js",
+    "js/katex-auto-render.min.js": "https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/contrib/auto-render.min.js",
     # GridStack 13.3.0 (MIT) - dashboard layout grid, bundle includes drag and drop
     "js/gridstack-all.js": "https://cdn.jsdelivr.net/npm/gridstack@13.3.0/dist/gridstack-all.js",
 }
@@ -81,7 +98,7 @@ CSS_DEPS = {
     "css/hljs-github.min.css": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css",
     "css/hljs-github-dark.min.css": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css",
     # KaTeX CSS (MIT) - references fonts/ relative path
-    "css/katex.min.css": "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css",
+    "css/katex.min.css": "https://cdn.jsdelivr.net/npm/katex@0.18.7/dist/katex.min.css",
     # GridStack CSS (MIT) - v12+ derives column widths from CSS variables
     "css/gridstack.min.css": "https://cdn.jsdelivr.net/npm/gridstack@13.3.0/dist/gridstack.min.css",
 }
@@ -101,7 +118,7 @@ def download_js_css() -> None:
 # =========================================================================
 # KaTeX fonts
 # =========================================================================
-KATEX_VERSION = "0.16.9"
+KATEX_VERSION = "0.18.7"
 KATEX_FONT_BASE = f"https://cdn.jsdelivr.net/npm/katex@{KATEX_VERSION}/dist/fonts"
 
 # All KaTeX font files referenced in katex.min.css
@@ -130,12 +147,12 @@ KATEX_FONTS = [
 
 
 def download_katex_fonts() -> None:
-    """Download KaTeX font files (woff2 + ttf fallback)."""
+    """Download KaTeX font files (woff2 + woff + ttf fallbacks)."""
     print("\n=== KaTeX Fonts ===")
     # Place in css/fonts/ so katex.min.css relative path works (url(fonts/...))
     fonts_dir = STATIC / "css" / "fonts"
     for font_name in KATEX_FONTS:
-        for ext in ("woff2", "ttf"):
+        for ext in ("woff2", "woff", "ttf"):
             url = f"{KATEX_FONT_BASE}/{font_name}.{ext}"
             _download(url, fonts_dir / f"{font_name}.{ext}", optional=True)
 
@@ -184,8 +201,18 @@ def download_inter_fonts() -> None:
 # =========================================================================
 CJK_FONTS = {
     # (font_family, fontsource_id, subset, dir_name, file_prefix)
-    "noto-sans-sc": ("Noto Sans SC", "noto-sans-sc", "chinese-simplified", "NotoSansSC"),
-    "noto-sans-tc": ("Noto Sans TC", "noto-sans-tc", "chinese-traditional", "NotoSansTC"),
+    "noto-sans-sc": (
+        "Noto Sans SC",
+        "noto-sans-sc",
+        "chinese-simplified",
+        "NotoSansSC",
+    ),
+    "noto-sans-tc": (
+        "Noto Sans TC",
+        "noto-sans-tc",
+        "chinese-traditional",
+        "NotoSansTC",
+    ),
     "noto-sans-kr": ("Noto Sans KR", "noto-sans-kr", "korean", "NotoSansKR"),
     "noto-sans-jp": ("Noto Sans JP", "noto-sans-jp", "japanese", "NotoSansJP"),
 }

@@ -220,6 +220,7 @@ include = ["omlx*"]
     "static/**/*",
     "i18n/*.json",
     "bench_corpora/*",
+    "vendor-lock.json",
 ]
 "omlx.eval" = ["data/*.jsonl"]
 "omlx.patches.deepseek_v41" = ["LICENSE"]

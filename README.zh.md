@@ -52,10 +52,6 @@
 
 ## 安装
 
-### macOS 应用
-
-从 [Releases](https://github.com/jundot/omlx/releases) 下载 `.dmg`，拖到 Applications 即可。应用支持自动更新，后续升级只需一键完成。macOS 应用也会安装轻量的 `~/.omlx/bin/omlx` CLI shim，因此可以从终端命令或 Apple Shortcuts 控制由应用管理的服务器。
-
 ### Homebrew
 
 ```bash
@@ -69,7 +65,7 @@ brew update && brew upgrade omlx
 brew services start omlx
 
 # 可选：MCP（Model Context Protocol）支持
-/opt/homebrew/opt/omlx/libexec/bin/pip install mcp
+uv sync --locked --no-dev --extra mcp
 ```
 
 可选的 GLM-5.2 / MiniMax M3 原生自定义内核目前需要 HEAD 构建：
@@ -83,30 +79,22 @@ brew install omlx --HEAD --with-custom-kernel
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-pip install -e .          # 仅核心
-pip install -e ".[mcp]"   # 含 MCP（Model Context Protocol）支持
+# Requires system uv >= 0.12.15; see README.md for optional features.
+uv sync --locked --no-dev          # 仅核心
+uv sync --locked --no-dev --extra mcp   # 含 MCP（Model Context Protocol）支持
 
 # 可选：GLM-5.2 / MiniMax M3 原生自定义内核
-OMLX_WITH_CUSTOM_KERNEL=1 pip install -e .
+OMLX_WITH_CUSTOM_KERNEL=1 uv sync --locked --no-dev --reinstall-package omlx
 ```
 
 需要 macOS 15.0+ (Sequoia), Python 3.10+ 和 Apple Silicon（M1/M2/M3/M4/M5）。
 
 ## 快速开始
 
-### macOS 应用
-
-从 Applications 文件夹启动 oMLX。欢迎界面会引导你完成三个步骤 — 模型目录设置、服务器启动、首个模型下载。就是这样。要连接 OpenClaw、OpenCode、Codex、Hermes Agent 或 Copilot，请参阅[集成](#集成)。
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.36.32.png" alt="oMLX 欢迎界面" width="360">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.34.30.png" alt="oMLX 菜单栏" width="240">
-</p>
-
 ### CLI
 
 ```bash
-omlx serve --model-dir ~/models
+.venv/bin/omlx serve --model-dir ~/models
 ```
 
 服务器会自动从子目录中发现 LLM、VLM、嵌入模型和重排序模型。任何 OpenAI 兼容客户端都可以连接到 `http://localhost:8000/v1`。内置聊天 UI 也可在 `http://localhost:8000/admin/chat` 使用。
@@ -218,14 +206,6 @@ brew services info omlx     # 查看状态
   <img src="docs/images/benchmark_omlx.png" alt="oMLX 基准测试工具" width="720">
 </p>
 
-### macOS 菜单栏应用
-
-原生 Swift / SwiftUI 菜单栏应用（非 Electron）。无需打开终端即可启动、停止和监控服务器。包含持久化服务统计（重启后保留）、崩溃自动重启和基于 Sparkle 的自动更新。
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.51.54.png" alt="oMLX 菜单栏统计" width="400">
-</p>
-
 ### API 兼容性
 
 OpenAI 和 Anthropic API 的直接替代品。支持流式使用统计（`stream_options.include_usage`）、Anthropic adaptive thinking 和视觉输入（base64、URL）。
@@ -283,28 +263,28 @@ OpenAI 和 Anthropic API 的直接替代品。支持流式使用统计（`stream
 
 ```bash
 # 已加载模型的内存限制
-omlx serve --model-dir ~/models --max-model-memory 32GB
+.venv/bin/omlx serve --model-dir ~/models --max-model-memory 32GB
 
 # 进程级内存限制（默认：auto = RAM - 8GB）
-omlx serve --model-dir ~/models --max-process-memory 80%
+.venv/bin/omlx serve --model-dir ~/models --max-process-memory 80%
 
 # 启用 KV 块的 SSD 缓存
-omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache
+.venv/bin/omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache
 
 # 设置内存热缓存大小
-omlx serve --model-dir ~/models --hot-cache-max-size 20%
+.venv/bin/omlx serve --model-dir ~/models --hot-cache-max-size 20%
 
 # 调整最大并发请求数（默认: 8）
-omlx serve --model-dir ~/models --max-concurrent-requests 16
+.venv/bin/omlx serve --model-dir ~/models --max-concurrent-requests 16
 
 # 使用 MCP 工具
-omlx serve --model-dir ~/models --mcp-config mcp.json
+.venv/bin/omlx serve --model-dir ~/models --mcp-config mcp.json
 
 # HuggingFace 镜像端点（适用于受限地区）
-omlx serve --model-dir ~/models --hf-endpoint https://hf-mirror.com
+.venv/bin/omlx serve --model-dir ~/models --hf-endpoint https://hf-mirror.com
 
 # API 密钥认证
-omlx serve --model-dir ~/models --api-key your-secret-key
+.venv/bin/omlx serve --model-dir ~/models --api-key your-secret-key
 # 仅限 Localhost：在管理后台全局设置中跳过验证
 ```
 
@@ -342,29 +322,9 @@ FastAPI Server (OpenAI / Anthropic API)
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-pip install -e ".[dev]"
-pytest -m "not slow"
+uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
+uv run --no-sync pytest -m "not slow and not integration"
 ```
-
-### macOS 应用
-
-原生 SwiftUI 应用位于 `apps/omlx-mac/`，需要 Xcode 26.5+ 和 Python 3.11+。venvstacks 已声明为 dev 依赖，因此 `pip install -e ".[dev]"`（或 `uv sync --dev`）会引入固定版本。若偏好主机全局工具运行器，也可使用 `uvx venvstacks` 或 `pipx run venvstacks`。
-
-```bash
-# 暂存可运行的 oMLX.app（xcodebuild + venvstacks Python 层 + ad-hoc 签名）
-apps/omlx-mac/Scripts/build.sh release
-
-# 结果在 apps/omlx-mac/build/Stage/oMLX.app
-open apps/omlx-mac/build/Stage/oMLX.app
-
-# 强制重建 venvstacks（默认按指纹缓存）
-apps/omlx-mac/Scripts/build.sh release --rebuild-donor
-
-# 暂存包含可选 GLM-5.2 / MiniMax M3 原生自定义内核的应用
-apps/omlx-mac/Scripts/build.sh release --with-custom-kernel
-```
-
-首次 cold 构建需要 10–20 分钟（venvstacks Python 层组装）。后续构建复用 `packaging/_export/` 缓存，约 4 分钟完成。层配置请参阅 [packaging/README.md](packaging/README.md)，Swift 源码请参阅 [apps/omlx-mac/](apps/omlx-mac/)。
 
 ## 贡献
 
@@ -383,6 +343,5 @@ apps/omlx-mac/Scripts/build.sh release --with-custom-kernel
 - [MLX](https://github.com/ml-explore/mlx) 和 [mlx-lm](https://github.com/ml-explore/mlx-lm) by Apple
 - [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) - Apple Silicon 上的视觉语言模型推理
 - [vllm-mlx](https://github.com/waybarrios/vllm-mlx) - oMLX 从 vllm-mlx v0.1.0 起步，经过大幅演进，增加了多模型服务、分层 KV 缓存、完整分页缓存支持的 VLM、管理后台和 macOS 菜单栏应用
-- [venvstacks](https://venvstacks.lmstudio.ai) - macOS 应用包的便携 Python 环境分层
 - [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) - Apple Silicon 嵌入模型支持
 - [dflash-mlx](https://github.com/bstnxbt/dflash-mlx) - Apple Silicon 上的块扩散推测解码 (Block diffusion speculative decoding)

@@ -10,10 +10,10 @@ oMLX requires Apple Silicon, macOS 15.0+, and Python 3.11–3.13. Fork the repos
 git clone https://github.com/<your-username>/omlx.git
 cd omlx
 git checkout -b fix/describe-the-change
-python -m pip install -e ".[dev]"
+uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
 ```
 
-See [Development](../README.md#development) for app builds and [installation instructions](../README.md#from-source) for native kernel requirements.
+See [Development](../README.md#development) for CLI development and [installation instructions](../README.md#from-source) for native kernel requirements.
 
 ## Keep Changes Focused
 
@@ -29,16 +29,16 @@ For bug fixes, provide a reproduction and a regression test where practical. The
 Run the relevant tests, then the default suite for code changes:
 
 ```bash
-python -m pytest tests/test_config.py  # Replace with the affected test files
-python -m pytest                      # Excludes slow and integration tests
+uv run --no-sync pytest tests/test_config.py  # Replace with the affected test files
+uv run --no-sync pytest                      # Excludes slow and integration tests
 ```
 
 See [TESTING.md](TESTING.md) for additional checks. For inference or cache changes, include a representative real-model check when possible, covering affected features such as prefix reuse, streaming, or concurrent requests. State what you ran and what remains untested; CI or mocked tests do not replace hardware validation.
 
-For visible UI changes, include screenshots and check the actual screen. Run relevant JavaScript tests and build the macOS app when those components change. After editing admin templates or JavaScript, rebuild CSS:
+For visible UI changes, include screenshots and check the actual screen. Run relevant JavaScript tests when those components change. After editing admin templates or JavaScript, rebuild CSS:
 
 ```bash
-python omlx/admin/build_css.py
+uv run --no-sync uv run --no-sync python omlx/admin/build_css.py
 ```
 
 Use the existing translation catalogs and preserve placeholders. When web translation keys change, update `omlx/admin/i18n/en.json` and run:

@@ -53,10 +53,6 @@
 
 ## Installation
 
-### Application macOS
-
-Téléchargez le `.dmg` depuis les [Releases](https://github.com/jundot/omlx/releases), glissez-le dans Applications, c'est tout. L'application inclut une mise à jour automatique intégrée, les futures mises à jour se font en un clic. L'application macOS installe aussi un shim CLI léger dans `~/.omlx/bin/omlx`, ce qui permet de contrôler le serveur géré par l'app depuis le terminal ou Apple Shortcuts.
-
 ### Homebrew
 
 ```bash
@@ -70,7 +66,7 @@ brew update && brew upgrade omlx
 brew services start omlx
 
 # Optionnel : support MCP (Model Context Protocol)
-/opt/homebrew/opt/omlx/libexec/bin/pip install mcp
+uv sync --locked --no-dev --extra mcp
 ```
 
 Les kernels natifs personnalisés optionnels pour GLM-5.2 / MiniMax M3 nécessitent actuellement un build HEAD :
@@ -84,30 +80,22 @@ brew install omlx --HEAD --with-custom-kernel
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-pip install -e .          # Core uniquement
-pip install -e ".[mcp]"   # Avec support MCP (Model Context Protocol)
+# Requires system uv >= 0.12.15; see README.md for optional features.
+uv sync --locked --no-dev          # Core uniquement
+uv sync --locked --no-dev --extra mcp   # Avec support MCP (Model Context Protocol)
 
 # Optionnel : kernels natifs personnalisés GLM-5.2 / MiniMax M3
-OMLX_WITH_CUSTOM_KERNEL=1 pip install -e .
+OMLX_WITH_CUSTOM_KERNEL=1 uv sync --locked --no-dev --reinstall-package omlx
 ```
 
 Nécessite macOS 15.0+ (Sequoia), Python 3.10+, et Apple Silicon (M1/M2/M3/M4/M5).
 
 ## Démarrage rapide
 
-### Application macOS
-
-Lancez oMLX depuis votre dossier Applications. L'écran de bienvenue vous guide en trois étapes — répertoire des modèles, démarrage du serveur, et premier téléchargement de modèle. C'est tout. Pour connecter OpenClaw, OpenCode, Codex ou Hermes Agent, voir [Intégrations](#intégrations).
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.36.32.png" alt="oMLX Welcome Screen" width="360">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.34.30.png" alt="oMLX Menubar" width="240">
-</p>
-
 ### CLI
 
 ```bash
-omlx serve --model-dir ~/models
+.venv/bin/omlx serve --model-dir ~/models
 ```
 
 Le serveur détecte automatiquement les LLM, VLM, modèles d'embedding et rerankers depuis les sous-répertoires. N'importe quel client compatible OpenAI peut se connecter à `http://localhost:8000/v1`. Une interface de chat intégrée est aussi disponible à `http://localhost:8000/admin/chat`.
@@ -218,14 +206,6 @@ Benchmarking en un clic depuis le panneau d'admin. Mesure le prefill (PP) et la 
   <img src="docs/images/benchmark_omlx.png" alt="oMLX Benchmark Tool" width="720">
 </p>
 
-### Application barre de menus macOS
-
-Application native Swift / SwiftUI dans la barre de menus (pas Electron). Démarrez, arrêtez et surveillez le serveur sans ouvrir un terminal. Inclut des statistiques de service persistantes (survivent aux redémarrages), un redémarrage automatique en cas de crash, et une mise à jour automatique via Sparkle.
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.51.54.png" alt="oMLX Menubar Stats" width="400">
-</p>
-
 ### Compatibilité API
 
 Remplacement direct des APIs OpenAI et Anthropic. Supporte les statistiques d'usage en streaming (`stream_options.include_usage`), le thinking adaptatif Anthropic, et les entrées visuelles (base64, URL).
@@ -283,28 +263,28 @@ Les modèles sont auto-détectés par type. Vous pouvez aussi télécharger des 
 
 ```bash
 # Limite mémoire pour les modèles chargés
-omlx serve --model-dir ~/models --max-model-memory 32GB
+.venv/bin/omlx serve --model-dir ~/models --max-model-memory 32GB
 
 # Limite mémoire au niveau du processus (par défaut : auto = RAM - 8 Go)
-omlx serve --model-dir ~/models --max-process-memory 80%
+.venv/bin/omlx serve --model-dir ~/models --max-process-memory 80%
 
 # Activer le cache SSD pour les blocs KV
-omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache
+.venv/bin/omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache
 
 # Définir la taille du cache chaud en mémoire
-omlx serve --model-dir ~/models --hot-cache-max-size 20%
+.venv/bin/omlx serve --model-dir ~/models --hot-cache-max-size 20%
 
 # Ajuster le nombre max de requêtes simultanées (par défaut : 8)
-omlx serve --model-dir ~/models --max-concurrent-requests 16
+.venv/bin/omlx serve --model-dir ~/models --max-concurrent-requests 16
 
 # Avec les outils MCP
-omlx serve --model-dir ~/models --mcp-config mcp.json
+.venv/bin/omlx serve --model-dir ~/models --mcp-config mcp.json
 
 # Endpoint miroir HuggingFace (pour les régions restreintes)
-omlx serve --model-dir ~/models --hf-endpoint https://hf-mirror.com
+.venv/bin/omlx serve --model-dir ~/models --hf-endpoint https://hf-mirror.com
 
 # Authentification par clé API
-omlx serve --model-dir ~/models --api-key votre-clé-secrète
+.venv/bin/omlx serve --model-dir ~/models --api-key votre-clé-secrète
 # Localhost uniquement : désactivez la vérification via les paramètres globaux du panneau d'admin
 ```
 
@@ -342,29 +322,9 @@ Serveur FastAPI (API OpenAI / Anthropic)
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-pip install -e ".[dev]"
-pytest -m "not slow"
+uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
+uv run --no-sync pytest -m "not slow and not integration"
 ```
-
-### Application macOS
-
-L'application SwiftUI native vit dans `apps/omlx-mac/`. Nécessite Xcode 26.5+ et Python 3.11+. venvstacks est déclaré comme dépendance dev, donc `pip install -e ".[dev]"` (ou `uv sync --dev`) installe la version épinglée. Le script de build retombe sur `uvx venvstacks` ou `pipx run venvstacks` si vous préférez un runner d'outils global.
-
-```bash
-# Préparer un oMLX.app exécutable (xcodebuild + couches Python venvstacks + signature ad-hoc)
-apps/omlx-mac/Scripts/build.sh release
-
-# Le résultat atterrit dans apps/omlx-mac/build/Stage/oMLX.app
-open apps/omlx-mac/build/Stage/oMLX.app
-
-# Forcer une reconstruction de venvstacks (sinon mis en cache par empreinte)
-apps/omlx-mac/Scripts/build.sh release --rebuild-donor
-
-# Préparer avec les kernels natifs personnalisés optionnels GLM-5.2 / MiniMax M3
-apps/omlx-mac/Scripts/build.sh release --with-custom-kernel
-```
-
-Le premier build à froid prend 10–20 minutes (assemblage des couches Python venvstacks). Les builds suivants réutilisent `packaging/_export/` et finissent en environ 4 minutes. Voir [packaging/README.md](packaging/README.md) pour la configuration des couches et [apps/omlx-mac/](apps/omlx-mac/) pour les sources Swift.
 
 ## Contribuer
 
@@ -383,6 +343,5 @@ Les contributions sont les bienvenues ! Voir le [Guide de contribution](docs/CON
 - [MLX](https://github.com/ml-explore/mlx) et [mlx-lm](https://github.com/ml-explore/mlx-lm) par Apple
 - [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) — inférence de modèles vision-langage sur Apple Silicon
 - [vllm-mlx](https://github.com/waybarrios/vllm-mlx) — oMLX a démarré à partir de vllm-mlx v0.1.0 et a considérablement évolué avec le service multi-modèles, le cache KV à plusieurs niveaux, le support VLM avec cache paginé complet, un panneau d'admin, et une app dans la barre de menus macOS
-- [venvstacks](https://venvstacks.lmstudio.ai) — couches d'environnements Python portables pour le bundle de l'app macOS
 - [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) — support des modèles d'embedding sur Apple Silicon
 - [dflash-mlx](https://github.com/bstnxbt/dflash-mlx) — décodage spéculatif par diffusion par blocs sur Apple Silicon

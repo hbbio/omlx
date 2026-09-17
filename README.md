@@ -7,7 +7,7 @@
 </p>
 
 <h1 align="center">oMLX</h1>
-<p align="center"><b>LLM inference, optimized for your Mac</b><br>Continuous batching and tiered KV caching, managed directly from your menu bar.</p>
+<p align="center"><b>LLM inference, optimized for your Mac</b><br>Continuous batching and tiered KV caching, run from your terminal.</p>
 
 <p align="center">
 <a href="https://www.buymeacoffee.com/jundot"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40"></a>
@@ -46,83 +46,43 @@
   <img src="docs/images/omlx_dashboard.png" alt="oMLX Admin Dashboard" width="800">
 </p>
 
-> *Every LLM server I tried made me choose between convenience and control. I wanted to pin everyday models in memory, auto-swap heavier ones on demand, set context limits - and manage it all from a menu bar.*
->
-> *oMLX persists KV cache across a hot in-memory tier and cold SSD tier - even when context changes mid-conversation, all past context stays cached and reusable across requests, making local LLMs practical for real coding work with tools like Claude Code. That's why I built it.*
-
 ## Install
-
-### macOS App
-
-Download the `.dmg` from [Releases](https://github.com/jundot/omlx/releases), drag to Applications, done. The app includes in-app auto-update, so future upgrades are just one click. The macOS app also installs a lightweight `~/.omlx/bin/omlx` CLI shim so terminal commands and Apple Shortcuts can control the app-managed server.
-
-### Homebrew
-
-```bash
-brew tap jundot/omlx https://github.com/jundot/omlx
-brew install jundot/omlx/omlx
-
-# Upgrade to the latest version
-brew update && brew upgrade omlx
-
-# Run as a background service (auto-restarts on crash)
-omlx start
-
-# Optional: MCP (Model Context Protocol) support
-/opt/homebrew/opt/omlx/libexec/bin/pip install mcp
-```
-
-Optional GLM-5.2 / MiniMax M3 native custom kernels currently require a HEAD build:
-
-```bash
-brew install jundot/omlx/omlx --HEAD --with-custom-kernel
-```
 
 ### From Source
 
-```bash
-git clone https://github.com/jundot/omlx.git
-cd omlx
-pip install -e .          # Core only
-pip install -e ".[mcp]"   # With MCP (Model Context Protocol) support
+Requires Apple Silicon, macOS 15+, and a system installation of `uv` >= 0.12.15 (`brew install uv` if needed). This checkout uses Python 3.11 by default; 3.12 and 3.13 are also supported. `uv` downloads Python if needed, but does not install a private copy of itself.
 
-# GLM-5.2 / MiniMax M3 / Qwen3.5 native custom kernels (strongly recommended
-# if you serve those families -- see note below)
-OMLX_WITH_CUSTOM_KERNEL=1 pip install -e .
+```bash
+uv sync --locked --no-dev
+source .venv/bin/activate
+omlx serve --model-dir ~/models
 ```
 
-Requires macOS 15.0+ (Sequoia), Python 3.11–3.13, and Apple Silicon (M1/M2/M3/M4/M5).
+The default install supports text inference. Add only the features you need in the same sync command; subsequent syncs should keep the same `--extra` flags:
 
-> **Note on native custom kernels:** a plain `pip install -e .` does NOT build
-> them, and the affected model families then silently fall back to much slower
-> generic paths -- for GLM-5.2 the fused DSA prefill is roughly 30x faster with
-> the kernels (measured 845 vs ~29 tok/s on an M3 Ultra), and the fallback also
-> uses more memory (#2137). Building them requires the Metal toolchain, which
-> Command Line Tools alone do not provide (`xcrun: error: unable to find utility
-> "metal"`): install full Xcode, or use the official DMG which ships the kernels
-> precompiled. Homebrew can build them with `brew install jundot/omlx/omlx --HEAD
-> --with-custom-kernel`, but that build also needs full Xcode. To verify your
-> install:
->
-> ```bash
-> python -c "from omlx.custom_kernels import native_kernel_status; print(native_kernel_status())"
-> ```
+```bash
+uv sync --locked --no-dev --extra vision --extra embeddings
+```
+
+Available extras: `vision` (also needed for TurboQuant KV cache and VLM MTP), `embeddings`, `speculative` (DFlash), `audio`, `documents`, `web-search`, `mcp`, `cluster`, `grammar`, `modelscope`, and `paroquant`. Grammar and audio add large dependency trees. The native macOS app and DMG packaging have been removed; launch the server from the CLI. The optional browser admin/chat interface remains available.
+
+Optional native kernels for GLM-5.2, MiniMax M3, and Qwen3.5 require full Xcode with the Metal toolchain:
+
+```bash
+OMLX_WITH_CUSTOM_KERNEL=1 uv sync --locked --no-dev --reinstall-package omlx
+.venv/bin/python -c "from omlx.custom_kernels import native_kernel_status; print(native_kernel_status())"
+```
+
+`uv.lock` fixes registry artifacts and Git revisions across supported Python versions. Normal installs use `--locked` and fail on stale metadata. To intentionally update dependencies, run `uv lock --upgrade`, review the lock diff, and run tests before committing it. The release-date cutoff in `pyproject.toml` must also be advanced deliberately. CI and wheel builds use the committed lock. Homebrew source archives must include it; older upstream releases do not contain this fork's changes.
+
+Benchmark results and responses remain local. Hardware UUID collection, community uploads, automatic update checks, and the telemetry-enabling Claude cross-session option have been removed. Hugging Face and OpenTelemetry opt-outs are set before dependency imports. Model downloads, external integrations, and explicitly requested online features still use the network.
 
 ## Quickstart
-
-### macOS App
-
-Launch oMLX from your Applications folder. The Welcome screen guides you through three steps - model directory, server start, and first model download. That's it. To connect OpenClaw, OpenCode, Codex, Hermes Agent, or Copilot, see [Integrations](#integrations).
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.36.32.png" alt="oMLX Welcome Screen" width="360">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.34.30.png" alt="oMLX Menubar" width="240">
-</p>
 
 ### CLI
 
 ```bash
-# Managed background server (macOS app or Homebrew install)
+# Managed background server (Homebrew install)
 omlx start
 omlx stop
 omlx restart
@@ -258,14 +218,6 @@ One-click benchmarking from the admin panel. Measures prefill (PP) and text gene
   <img src="docs/images/benchmark_omlx.png" alt="oMLX Benchmark Tool" width="720">
 </p>
 
-### macOS Menubar App
-
-Native Swift / SwiftUI menubar app (not Electron). Start, stop, and monitor the server without opening a terminal. Includes [local usage history](docs/usage-analytics.md) with per-model totals and an hourly heatmap, persistent serving stats (survives restarts), auto-restart on crash, and built-in auto-update.
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.51.54.png" alt="oMLX Menubar Stats" width="400">
-</p>
-
 ### API Compatibility
 
 Drop-in replacement for OpenAI and Anthropic APIs. Supports streaming usage stats (`stream_options.include_usage`), Anthropic adaptive thinking, and vision inputs (base64, URL).
@@ -323,7 +275,7 @@ Models are auto-detected by type. You can also download models directly from the
 ## CLI Configuration
 
 ```bash
-# Managed background server (macOS app or Homebrew install)
+# Managed background server (Homebrew install)
 omlx start
 omlx stop
 omlx restart
@@ -398,29 +350,9 @@ FastAPI Server (OpenAI / Anthropic API)
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-pip install -e ".[dev]"
-pytest -m "not slow"
+uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
+uv run --no-sync pytest -m "not slow and not integration"
 ```
-
-### macOS App
-
-The native SwiftUI app lives at `apps/omlx-mac/`. Requires Xcode 26.5+ and Python 3.11+. venvstacks is declared as a dev dependency so `pip install -e ".[dev]"` (or `uv sync --dev`) brings the pinned version in. The build script also falls back to `uvx venvstacks` or `pipx run venvstacks` if you prefer a host-global tool runner.
-
-```bash
-# Stage a runnable oMLX.app (xcodebuild + venvstacks Python layers + ad-hoc sign)
-apps/omlx-mac/Scripts/build.sh release
-
-# Result lands at apps/omlx-mac/build/Stage/oMLX.app
-open apps/omlx-mac/build/Stage/oMLX.app
-
-# Force a fresh venvstacks rebuild (otherwise it's cached by fingerprint)
-apps/omlx-mac/Scripts/build.sh release --rebuild-donor
-
-# Stage with optional GLM-5.2 / MiniMax M3 native custom kernels
-apps/omlx-mac/Scripts/build.sh release --with-custom-kernel
-```
-
-First cold build takes 10–20 minutes (venvstacks Python layer assembly). Subsequent builds reuse the cached `packaging/_export/` and finish in about 4 minutes. See [packaging/README.md](packaging/README.md) for the layer configuration and [apps/omlx-mac/](apps/omlx-mac/) for the Swift sources.
 
 ## Contributing
 
@@ -438,10 +370,8 @@ Contributions are welcome! See [Contributing Guide](docs/CONTRIBUTING.md) for de
 
 - [MLX](https://github.com/ml-explore/mlx) and [mlx-lm](https://github.com/ml-explore/mlx-lm) by Apple
 - [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) - Vision-language model inference on Apple Silicon
-- [vllm-mlx](https://github.com/waybarrios/vllm-mlx) - oMLX started from vllm-mlx v0.1.0 and evolved significantly with multi-model serving, tiered KV caching, VLM with full paged cache support, an admin panel, and a macOS menu bar app
-- [venvstacks](https://venvstacks.lmstudio.ai) - Portable Python environment layering for the macOS app bundle
+- [vllm-mlx](https://github.com/waybarrios/vllm-mlx) - oMLX started from vllm-mlx v0.1.0 and evolved significantly with multi-model serving, tiered KV caching, VLM with full paged cache support, and an admin panel
 - [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) - Embedding model support for Apple Silicon
 - [dflash-mlx](https://github.com/bstnxbt/dflash-mlx) - Block diffusion speculative decoding on Apple Silicon
 - [MTPLX](https://github.com/youssofal/mtplx) - Lightning MTP's verify-shape Metal kernels are powered by MTPLX by Youssof Altoukhi, which also inspired the depth-k pipeline
 - [mlx-serve](https://github.com/ddalcu/mlx-serve) - The fused GDN verify prework kernel is adapted from mlx-serve's port of the mlxfast-challenge qwen35_packed_gdn_prework kernel; Qwen4 QSA's 128-bit K/V staging is adapted from mlx-serve's MIT-licensed `msv_attn_p256` kernel
-- [SiliconScope](https://github.com/kennss/SiliconScope) - The menu bar statistics take their design and rendering approach from SiliconScope by Kennt Kim, which also inspired the energy-efficient re-render gating

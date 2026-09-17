@@ -52,10 +52,6 @@
 
 ## インストール
 
-### macOSアプリ
-
-[Releases](https://github.com/jundot/omlx/releases)から`.dmg`をダウンロードし、Applicationsにドラッグするだけです。アプリ内自動アップデートに対応しているので、以降のアップグレードはワンクリックで完了します。macOSアプリは軽量な`~/.omlx/bin/omlx` CLI shimもインストールするため、ターミナルコマンドやApple Shortcutsからアプリ管理のサーバーを制御できます。
-
 ### Homebrew
 
 ```bash
@@ -69,7 +65,7 @@ brew update && brew upgrade omlx
 brew services start omlx
 
 # オプション: MCP（Model Context Protocol）サポート
-/opt/homebrew/opt/omlx/libexec/bin/pip install mcp
+uv sync --locked --no-dev --extra mcp
 ```
 
 オプションの GLM-5.2 / MiniMax M3 ネイティブカスタムカーネルは、現在 HEAD ビルドが必要です:
@@ -83,30 +79,22 @@ brew install omlx --HEAD --with-custom-kernel
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-pip install -e .          # コアのみ
-pip install -e ".[mcp]"   # MCP（Model Context Protocol）サポート付き
+# Requires system uv >= 0.12.15; see README.md for optional features.
+uv sync --locked --no-dev          # コアのみ
+uv sync --locked --no-dev --extra mcp   # MCP（Model Context Protocol）サポート付き
 
 # オプション: GLM-5.2 / MiniMax M3 ネイティブカスタムカーネル
-OMLX_WITH_CUSTOM_KERNEL=1 pip install -e .
+OMLX_WITH_CUSTOM_KERNEL=1 uv sync --locked --no-dev --reinstall-package omlx
 ```
 
 Python 3.10+とApple Silicon（M1/M2/M3/M4/M5）が必要です。
 
 ## クイックスタート
 
-### macOSアプリ
-
-ApplicationsフォルダからoMLXを起動します。ウェルカム画面が3つのステップを案内します — モデルディレクトリの設定、サーバー起動、最初のモデルダウンロード。以上です。OpenClaw、OpenCode、Codex、Hermes Agent、Copilotに接続するには、[統合](#統合)を参照してください。
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.36.32.png" alt="oMLX ウェルカム画面" width="360">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.34.30.png" alt="oMLX メニューバー" width="240">
-</p>
-
 ### CLI
 
 ```bash
-omlx serve --model-dir ~/models
+.venv/bin/omlx serve --model-dir ~/models
 ```
 
 サーバーがサブディレクトリからLLM、VLM、エンベディングモデル、リランカーを自動的に検出します。OpenAI互換クライアントから`http://localhost:8000/v1`に接続できます。内蔵チャットUIも`http://localhost:8000/admin/chat`で利用可能です。
@@ -218,14 +206,6 @@ Claude Codeで小さなコンテキストモデルを実行するためのコン
   <img src="docs/images/benchmark_omlx.png" alt="oMLX ベンチマークツール" width="720">
 </p>
 
-### macOSメニューバーアプリ
-
-ネイティブ Swift / SwiftUI メニューバーアプリ（Electron ではありません）。ターミナルを開かずにサーバーの起動、停止、監視が可能です。永続的な配信統計（再起動後も維持）、クラッシュ時の自動再起動、Sparkle による自動アップデートを含みます。
-
-<p align="center">
-  <img src="docs/images/Screenshot 2026-02-10 at 00.51.54.png" alt="oMLX メニューバー統計" width="400">
-</p>
-
 ### API互換性
 
 OpenAIとAnthropic APIのドロップイン代替です。ストリーミング使用統計（`stream_options.include_usage`）、Anthropic adaptive thinking、ビジョン入力（base64、URL）をサポートします。
@@ -283,25 +263,25 @@ mlx-lmで利用可能なすべての関数呼び出し形式、JSONスキーマ�
 
 ```bash
 # ロード済みモデルのメモリ上限
-omlx serve --model-dir ~/models --max-model-memory 32GB
+.venv/bin/omlx serve --model-dir ~/models --max-model-memory 32GB
 
 # プロセスレベルのメモリ上限（デフォルト: auto = RAM - 8GB）
-omlx serve --model-dir ~/models --max-process-memory 80%
+.venv/bin/omlx serve --model-dir ~/models --max-process-memory 80%
 
 # KVブロック用SSDキャッシュを有効化
-omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache
+.venv/bin/omlx serve --model-dir ~/models --paged-ssd-cache-dir ~/.omlx/cache
 
 # メモリ内ホットキャッシュサイズの設定
-omlx serve --model-dir ~/models --hot-cache-max-size 20%
+.venv/bin/omlx serve --model-dir ~/models --hot-cache-max-size 20%
 
 # 最大同時リクエスト数の調整（デフォルト: 8）
-omlx serve --model-dir ~/models --max-concurrent-requests 16
+.venv/bin/omlx serve --model-dir ~/models --max-concurrent-requests 16
 
 # MCPツールの使用
-omlx serve --model-dir ~/models --mcp-config mcp.json
+.venv/bin/omlx serve --model-dir ~/models --mcp-config mcp.json
 
 # APIキー認証
-omlx serve --model-dir ~/models --api-key your-secret-key
+.venv/bin/omlx serve --model-dir ~/models --api-key your-secret-key
 # Localhost専用: 管理画面のグローバル設定で検証をスキップ
 ```
 
@@ -339,29 +319,9 @@ FastAPI Server (OpenAI / Anthropic API)
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-pip install -e ".[dev]"
-pytest -m "not slow"
+uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
+uv run --no-sync pytest -m "not slow and not integration"
 ```
-
-### macOSアプリ
-
-ネイティブ SwiftUI アプリは `apps/omlx-mac/` にあります。Xcode 26.5+ と Python 3.11+ が必要です。venvstacks は dev 依存として宣言されているため、`pip install -e ".[dev]"`（または `uv sync --dev`）でピン留めされたバージョンが入ります。ホスト全体のツールランナーを使いたい場合は `uvx venvstacks` や `pipx run venvstacks` でも動作します。
-
-```bash
-# 実行可能な oMLX.app をステージング（xcodebuild + venvstacks Python レイヤー + ad-hoc 署名）
-apps/omlx-mac/Scripts/build.sh release
-
-# 出力は apps/omlx-mac/build/Stage/oMLX.app
-open apps/omlx-mac/build/Stage/oMLX.app
-
-# venvstacks を強制的に再ビルド（通常は fingerprint でキャッシュ）
-apps/omlx-mac/Scripts/build.sh release --rebuild-donor
-
-# オプションの GLM-5.2 / MiniMax M3 ネイティブカスタムカーネルを含めてステージング
-apps/omlx-mac/Scripts/build.sh release --with-custom-kernel
-```
-
-初回 cold ビルドは 10–20 分かかります（venvstacks Python レイヤーの組み立て）。以降のビルドは `packaging/_export/` のキャッシュを再利用し、約 4 分で完了します。レイヤー構成は [packaging/README.md](packaging/README.md)、Swift ソースは [apps/omlx-mac/](apps/omlx-mac/) を参照してください。
 
 ## コントリビューション
 
@@ -380,6 +340,5 @@ apps/omlx-mac/Scripts/build.sh release --with-custom-kernel
 - [MLX](https://github.com/ml-explore/mlx)と[mlx-lm](https://github.com/ml-explore/mlx-lm) by Apple
 - [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) - Apple Siliconでのビジョン言語モデル推論
 - [vllm-mlx](https://github.com/waybarrios/vllm-mlx) - oMLXはvllm-mlx v0.1.0からスタートし、マルチモデルサービング、階層型KVキャッシュ、完全なページドキャッシュ対応のVLM、管理画面、macOSメニューバーアプリへと大きく進化しました
-- [venvstacks](https://venvstacks.lmstudio.ai) - macOSアプリバンドルのためのポータブルPython環境レイヤリング
 - [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) - Apple Silicon向けエンベディングモデルサポート
 - [dflash-mlx](https://github.com/bstnxbt/dflash-mlx) - Apple Siliconでのブロック拡散 speculative decoding

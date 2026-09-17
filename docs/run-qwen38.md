@@ -36,13 +36,16 @@ is off for compatibility with ANE; the oQ4e checkpoint remains quantized.
 
 ## 1. Build with the system uv
 
-Run from the checkout. Full Xcode and its Metal toolchain are required; both
-were found on this machine. The commands use the existing `uv` on `PATH`.
+Run from the checkout. Full Xcode and its Metal toolchain are required. Check
+that the compiler runs: `xcrun --find metal` can find Xcode's launcher even
+when the compiler component is missing. If `xcrun metal --version` reports a
+missing toolchain, install it with `xcodebuild -downloadComponent MetalToolchain`.
+The commands use the existing `uv` on `PATH`.
 
 ```bash
 cd /Users/henri/git/omlx
 command -v uv
-xcrun --find metal
+xcrun metal --version
 
 uv sync --locked --no-dev --extra vision --group build
 OMLX_WITH_CUSTOM_KERNEL=1 uv sync --locked --no-dev --extra vision --group build \

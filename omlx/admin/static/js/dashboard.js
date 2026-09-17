@@ -409,7 +409,6 @@
             latestVersion: null,
             releaseUrl: null,
             versionHover: false,
-            _updateCheckTimer: null,
 
             // HF Downloader state
             hfRepoId: '',
@@ -578,11 +577,6 @@
             benchCopied: false,
             benchTip: null,
             benchDeviceInfo: null,
-            benchUploadResults: [],
-            benchUploadDone: null,
-            benchUploading: false,
-            benchUploadSkipped: null,  // { reason } — only external-endpoint runs skip now
-            benchUploadFlags: [],      // [{key, label}] acceleration active during the run
             // { bench_id, model_id } when the server reports a running bench
             // that is NOT the one this tab is displaying. Drives the "another
             // bench is running" banner + disables Start so the user doesn't
@@ -682,11 +676,9 @@
                     this.loadModels(),
                     this.loadServerInfo(),
                     this.loadProfileFields(),
-                    this.loadPresets(),
-                    this.checkForUpdate()
+                    this.loadPresets()
                 ]);
 
-                this.startUpdateCheckTimer();
 
                 await this.handleMainTabChange(this.mainTab);
 
@@ -877,17 +869,6 @@
                     }
                 } catch (e) {
                     // Silently ignore - not critical
-                }
-            },
-
-            startUpdateCheckTimer() {
-                this._updateCheckTimer = setInterval(() => this.checkForUpdate(), 3600000);
-            },
-
-            stopUpdateCheckTimer() {
-                if (this._updateCheckTimer) {
-                    clearInterval(this._updateCheckTimer);
-                    this._updateCheckTimer = null;
                 }
             },
 
@@ -4236,11 +4217,6 @@
                 this.benchBatchResults = [];
                 this.benchError = '';
                 this.benchBenchId = null;
-                this.benchUploadResults = [];
-                this.benchUploadDone = null;
-                this.benchUploading = false;
-                this.benchUploadSkipped = null;
-                this.benchUploadFlags = [];
                 this.benchRunExternal = this.benchExternalEnabled
                     ? { base_url: this.externalBaseUrl.trim(), model: this.externalModel.trim() }
                     : null;
@@ -4324,37 +4300,6 @@
                                 }
                             }
                         } else if (data.type === 'done') {
-                            // Benchmark tests done, uploading starts
-                            this.benchUploading = true;
-                            this.benchProgress = {
-                                phase: 'upload',
-                                message: window.t('bench.uploading_community'),
-                                current: 0,
-                                total: 0,
-                            };
-                            this.loadModels();
-                        } else if (data.type === 'upload') {
-                            // Dedupe on replay: upload entries are unique by context_length.
-                            const exists = this.benchUploadResults.some(
-                                r => r.context_length === data.data.context_length
-                            );
-                            if (!exists) {
-                                this.benchUploadResults = [...this.benchUploadResults, data.data];
-                            }
-                        } else if (data.type === 'upload_done') {
-                            this.benchUploadDone = data.data;
-                            this.benchUploadFlags = data.data.feature_flags || [];
-                            this.benchUploading = false;
-                            this.benchRunning = false;
-                            this.benchProgress = null;
-                            es.close();
-                            this.benchEventSource = null;
-                        } else if (data.type === 'upload_skipped') {
-                            this.benchUploadSkipped = {
-                                reason: data.reason || 'external_endpoint',
-                                features: data.features || [],
-                            };
-                            this.benchUploading = false;
                             this.benchRunning = false;
                             this.benchProgress = null;
                             es.close();
@@ -4876,10 +4821,6 @@
                 this.benchRunning = true;
                 this.benchSingleResults = [];
                 this.benchBatchResults = [];
-                this.benchUploadResults = [];
-                this.benchUploadDone = null;
-                this.benchUploadSkipped = null;
-                this.benchUploadFlags = [];
                 this.benchProgress = null;
                 this.benchError = '';
                 this.connectBenchSSE(other.bench_id);

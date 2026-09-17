@@ -161,7 +161,7 @@ class BenchmarkRun:
     SSE delivery model: events are appended to `events` (append-only
     log) under `cond`. Subscribers replay `events` from offset 0 then
     wait on `cond` for new entries. `terminal` is set once the final
-    event (`upload_done` / `error`) has been published so subscribers
+    event (`done` / `error`) has been published so subscribers
     know to close their stream rather than wait for a follow-up.
     """
 
@@ -174,11 +174,9 @@ class BenchmarkRun:
     task: Optional[asyncio.Task] = None
     results: list[dict] = field(default_factory=list)
     error_message: str = ""
-    # Acceleration features active when the benchmark started. Results are
-    # uploaded either way; the flags ride along so the leaderboard can mark
-    # and filter them instead of silently mixing them in.
+    # Acceleration features active when the local benchmark started.
     experimental_features: list[str] = field(default_factory=list)
-    # Same snapshot in the upload payload's shape: [{key, label, detail?}].
+    # Human-readable snapshot: [{key, label, detail?}].
     feature_flags: list[dict] = field(default_factory=list)
     # Performance-relevant subset of the model's settings at run start.
     model_settings_snapshot: Optional[dict] = None
@@ -187,36 +185,10 @@ class BenchmarkRun:
     # Lifetime footprint high-water mark before the tests began, so the run's
     # own peak can be told apart from a larger one set earlier in the process.
     lifetime_footprint_at_start: int = 0
-    # Mirror of the upload SSE events so REST consumers (e.g. native Swift
-    # app polling /results) can render leaderboard status without opening
-    # the stream. Phases: "idle" → "uploading" → "done" | "skipped". The
-    # browser HTML still consumes the SSE stream directly; this is purely
-    # additive state that lives alongside it.
-    upload_state: dict = field(
-        default_factory=lambda: {
-            "phase": "idle",
-            "results": [],  # per-context-length: {context_length, id?, url?, duplicate?, error?}
-            "total": 0,
-            "success_count": 0,
-            "failed_count": 0,
-            "owner_hash": None,  # display hash, populated on upload_done
-            "skipped_reason": None,  # only "external_endpoint" reaches this now
-            # Always empty. Kept because BenchDTO.swift declares it non-optional,
-            # so dropping the key would fail decoding on every app build that has
-            # not been updated — which turns into a per-second error loop while the
-            # results poller runs.
-            "skipped_features": [],
-            "feature_flags": [],  # [{key, label, detail?}]
-        }
-    )
 
 
-# Event types that close the SSE stream for a bench run. `done` is NOT
-# terminal — it marks "tests finished, upload starting"; the real end of
-# stream is `upload_done` (or `error`). `upload_skipped` is the external
-# endpoint's last event: without it here, subscribers to an external run would
-# wait for an `upload_done` that never comes.
-_BENCH_TERMINAL_TYPES = frozenset({"upload_done", "upload_skipped", "error"})
+# Results stay local; completion closes the stream immediately.
+_BENCH_TERMINAL_TYPES = frozenset({"done", "error"})
 
 
 @dataclass(frozen=True)
@@ -1393,287 +1365,6 @@ def _sanitize_upload_error(resp: Any) -> str:
     return text[:300] or f"HTTP {status}"
 
 
-async def _upload_to_omlx_ai(run: BenchmarkRun, engine_pool: Any) -> None:
-    """Upload benchmark results to omlx.ai community benchmarks.
-
-    Sends each single-request result as a separate submission,
-    grouped by submission_group. Upload failures don't affect
-    the benchmark run status.
-    """
-    import requests
-
-    from .._version import __version__
-    from ..utils.hardware import (
-        compute_owner_hash,
-        get_chip_name,
-        get_gpu_core_count,
-        get_io_platform_uuid,
-        get_os_version,
-        get_total_memory_gb,
-        parse_chip_info,
-    )
-
-    # Accelerated runs upload too. They carry their flags so the leaderboard
-    # can mark and filter them, which is more useful than withholding the one
-    # set of numbers people most want to see.
-    run.upload_state["feature_flags"] = list(run.feature_flags)
-    if run.feature_flags:
-        logger.info(
-            "Benchmark upload tagged with acceleration flags: "
-            f"{[f['key'] for f in run.feature_flags]}"
-        )
-
-    run.upload_state["phase"] = "uploading"
-    await _send_event(
-        run,
-        {
-            "type": "progress",
-            "phase": "upload",
-            "message": "Uploading to community benchmarks...",
-            "current": 0,
-            "total": 0,
-        },
-    )
-
-    # Collect hardware info
-    chip_string = get_chip_name()
-    chip_name, chip_variant = parse_chip_info(chip_string)
-    memory_gb = round(get_total_memory_gb())
-    gpu_cores = get_gpu_core_count()
-    os_version = get_os_version()
-    omlx_version = __version__
-
-    # Compute owner_hash
-    owner_hash_full = None
-    owner_hash_display = None
-    io_uuid = get_io_platform_uuid()
-    if io_uuid:
-        owner_hash_full = compute_owner_hash(io_uuid, chip_name, gpu_cores, memory_gb)
-        # Display hash is without the verify character
-        owner_hash_display = owner_hash_full[:-1]
-
-    # Get model info
-    entry = engine_pool.get_entry(run.request.model_id)
-    model_path = entry.model_path if entry else ""
-    quantization = _detect_quantization(model_path)
-    model_name = _upload_model_name(run.request.model_id)
-
-    # Generate submission group
-    submission_group = str(uuid.uuid4())
-
-    # Peak process memory for the run. ri_lifetime_max_phys_footprint is a
-    # high-water mark since process start, so it only describes this benchmark
-    # when the benchmark actually set a new maximum — a server that previously
-    # held a larger model would otherwise report that older peak. Fall back to
-    # the sampler's own maximum, which is scoped to the run.
-    peak_footprint_gb = None
-    lifetime_end = get_lifetime_max_phys_footprint()
-    peak_bytes = 0
-    if lifetime_end and lifetime_end > run.lifetime_footprint_at_start:
-        peak_bytes = lifetime_end
-    elif run.sampler is not None:
-        peak_bytes = run.sampler.run_peak_footprint()
-    if peak_bytes > 0:
-        peak_footprint_gb = round(peak_bytes / (1024**3), 2)
-
-    # Collect single results and batch results
-    single_results = [r for r in run.results if r.get("test_type") == "single"]
-    uploadable_single_results = [
-        r for r in single_results if float(r.get("gen_tps", 0.0) or 0.0) > 0.0
-    ]
-    skipped_count = len(single_results) - len(uploadable_single_results)
-    batch_results = [r for r in run.results if r.get("test_type") == "batch"]
-
-    # Build batching_results from batch data
-    batching_results = []
-    pp1024_single = next((r for r in single_results if r.get("pp") == 1024), None)
-    if (
-        pp1024_single
-        and float(pp1024_single.get("gen_tps", 0.0) or 0.0) > 0.0
-        and batch_results
-    ):
-        baseline_tps = pp1024_single["gen_tps"]
-        batching_results.append(
-            {
-                "batch_size": 1,
-                "tg_tps": baseline_tps,
-                "speedup": 1.0,
-            }
-        )
-        for br in batch_results:
-            speedup = round(br["tg_tps"] / baseline_tps, 2) if baseline_tps > 0 else 1.0
-            batching_results.append(
-                {
-                    "batch_size": br["batch_size"],
-                    "tg_tps": br["tg_tps"],
-                    "speedup": speedup,
-                }
-            )
-
-    success_count = 0
-    failed_count = 0
-
-    if skipped_count:
-        logger.info(
-            f"Benchmark upload skipped {skipped_count} result(s) without "
-            f"measurable generation throughput"
-        )
-
-    for result in uploadable_single_results:
-        context_length = result["pp"]
-        peak_mem_gb = None
-        if result.get("peak_memory_bytes") and result["peak_memory_bytes"] > 0:
-            peak_mem_gb = round(result["peak_memory_bytes"] / (1024**3), 2)
-
-        payload = {
-            "chip_name": chip_name,
-            "chip_variant": chip_variant,
-            "memory_gb": memory_gb,
-            "gpu_cores": gpu_cores,
-            "omlx_version": omlx_version,
-            "os_version": os_version,
-            "model_name": model_name,
-            "quantization": quantization,
-            "context_length": context_length,
-            "context_profile": run.request.context_profile.value,
-            "pp_tps": result["processing_tps"],
-            "tg_tps": result["gen_tps"],
-            "ttft_ms": result.get("ttft_ms"),
-            "peak_memory_gb": peak_mem_gb,
-            "submission_group": submission_group,
-            "peak_footprint_gb": peak_footprint_gb,
-            "feature_flags": run.feature_flags,
-            "model_settings": _with_benchmark_context(
-                run.request.context_profile,
-                run.model_settings_snapshot,
-            ),
-            # Per-row: each context length has its own load window. Stays None
-            # when sampling was unavailable, so the site does not average
-            # fabricated zeros in as measurements.
-            "system_metrics": result.get("system_metrics"),
-        }
-
-        if owner_hash_full:
-            payload["owner_hash"] = owner_hash_full
-
-        # Attach batching_results only to the first submission (lowest context_length)
-        if context_length == uploadable_single_results[0]["pp"] and batching_results:
-            payload["batching_results"] = batching_results
-
-        try:
-            resp = await asyncio.to_thread(
-                requests.post,
-                OMLX_AI_API_URL,
-                json=payload,
-                timeout=15,
-            )
-
-            if resp.status_code == 201:
-                data = resp.json()
-                success_count += 1
-                result_dict = {
-                    "context_length": context_length,
-                    "id": data.get("id"),
-                    "url": data.get("url"),
-                }
-                run.upload_state["results"].append(result_dict)
-                await _send_event(
-                    run,
-                    {
-                        "type": "upload",
-                        "data": result_dict,
-                    },
-                )
-            elif resp.status_code == 409:
-                data = resp.json()
-                success_count += 1  # Duplicate is still ok
-                result_dict = {
-                    "context_length": context_length,
-                    "id": data.get("existing_id"),
-                    "url": data.get("existing_url"),
-                    "duplicate": True,
-                }
-                run.upload_state["results"].append(result_dict)
-                await _send_event(
-                    run,
-                    {
-                        "type": "upload",
-                        "data": result_dict,
-                    },
-                )
-            else:
-                failed_count += 1
-                error_msg = _sanitize_upload_error(resp)
-                result_dict = {
-                    "context_length": context_length,
-                    "error": error_msg,
-                }
-                run.upload_state["results"].append(result_dict)
-                await _send_event(
-                    run,
-                    {
-                        "type": "upload",
-                        "data": result_dict,
-                    },
-                )
-                # Surface the sanitized message to ops; the full body
-                # (truncated) goes to debug so it can still be retrieved
-                # from the log file if needed.
-                logger.warning(
-                    f"Benchmark upload failed for pp{context_length}: "
-                    f"{resp.status_code} {error_msg}"
-                )
-                if (resp.text or "")[:1] not in ("{", "["):
-                    logger.debug(
-                        "Benchmark upload non-JSON body (truncated): %r",
-                        (resp.text or "")[:500],
-                    )
-
-        except Exception as e:
-            failed_count += 1
-            result_dict = {
-                "context_length": context_length,
-                "error": str(e),
-            }
-            run.upload_state["results"].append(result_dict)
-            await _send_event(
-                run,
-                {
-                    "type": "upload",
-                    "data": result_dict,
-                },
-            )
-            logger.warning(f"Benchmark upload error for pp{context_length}: {e}")
-
-    run.upload_state["phase"] = "done"
-    run.upload_state["total"] = len(uploadable_single_results)
-    run.upload_state["success_count"] = success_count
-    run.upload_state["failed_count"] = failed_count
-    run.upload_state["skipped_count"] = skipped_count
-    run.upload_state["owner_hash"] = owner_hash_display
-    await _send_event(
-        run,
-        {
-            "type": "upload_done",
-            "data": {
-                "owner_hash": owner_hash_display,
-                "total": len(uploadable_single_results),
-                "success": success_count,
-                "failed": failed_count,
-                "skipped": skipped_count,
-                # Also on the event so SSE-only consumers (the HTML dashboard) get
-                # the flags without polling /results.
-                "feature_flags": run.feature_flags,
-            },
-        },
-    )
-
-    logger.info(
-        f"Benchmark upload complete: {success_count}/"
-        f"{len(uploadable_single_results)} succeeded, skipped={skipped_count}"
-    )
-
-
 async def run_benchmark(run: BenchmarkRun, engine_pool: Any) -> None:
     """Execute a complete benchmark run.
 
@@ -1848,20 +1539,14 @@ async def run_benchmark(run: BenchmarkRun, engine_pool: Any) -> None:
         if model_settings is not None and getattr(
             model_settings, "qwen35_ane_prefill_enabled", False
         ):
-            gdn_enabled = bool(
-                getattr(model_settings, "qwen35_ane_prefill_gdn", False)
-            )
+            gdn_enabled = bool(getattr(model_settings, "qwen35_ane_prefill_gdn", False))
             # The settings flag only records intent. The load-time patch stores
             # what it actually compiled on the model, so the trace and the
             # uploaded metadata reflect the runtime state (the patch can find
             # no eligible layers or drop layers at the program budget).
             loaded_model = getattr(engine, "_model", None)
-            compiled_mlp = getattr(
-                loaded_model, "_omlx_ane_mlp_prefill_count", None
-            )
-            compiled_gdn = getattr(
-                loaded_model, "_omlx_ane_gdn_prefill_count", None
-            )
+            compiled_mlp = getattr(loaded_model, "_omlx_ane_mlp_prefill_count", None)
+            compiled_gdn = getattr(loaded_model, "_omlx_ane_gdn_prefill_count", None)
             ane_active = bool(compiled_mlp or compiled_gdn)
             ane_trace_config = {
                 "sequence_length": int(
@@ -2068,41 +1753,6 @@ async def run_benchmark(run: BenchmarkRun, engine_pool: Any) -> None:
             },
         )
 
-        # Aligned prompts intentionally use non-standard PP4097/8193/etc.
-        # Keep them local rather than mixing them into PP4096 leaderboard
-        # buckets or depending on the remote service accepting arbitrary PP.
-        if request.align_prompt_to_ane:
-            run.upload_state["phase"] = "skipped"
-            run.upload_state["skipped_reason"] = "ane_aligned_prompt"
-            await _send_event(
-                run,
-                {
-                    "type": "upload_skipped",
-                    "reason": "ane_aligned_prompt",
-                    "features": run.feature_flags,
-                },
-            )
-            return
-
-        # Upload results to omlx.ai (failures don't affect benchmark status)
-        try:
-            await _upload_to_omlx_ai(run, engine_pool)
-        except Exception as e:
-            logger.warning(f"Benchmark upload to omlx.ai failed: {e}")
-            await _send_event(
-                run,
-                {
-                    "type": "upload_done",
-                    "data": {
-                        "owner_hash": None,
-                        "total": 0,
-                        "success": 0,
-                        "failed": 0,
-                        "error": str(e),
-                    },
-                },
-            )
-
     except asyncio.CancelledError:
         run.status = "cancelled"
         await _send_event(
@@ -2265,20 +1915,6 @@ async def _run_external_benchmark(run: BenchmarkRun) -> None:
                     "total_time": round(overall_duration, 1),
                     "total_tests": total_tests,
                 },
-            },
-        )
-
-        # External results measure remote hardware — never upload them to
-        # the omlx.ai community leaderboard. Mirrors the experimental-
-        # features skip so REST pollers see the same upload_state shape.
-        run.upload_state["phase"] = "skipped"
-        run.upload_state["skipped_reason"] = "external_endpoint"
-        await _send_event(
-            run,
-            {
-                "type": "upload_skipped",
-                "reason": "external_endpoint",
-                "features": [],
             },
         )
 

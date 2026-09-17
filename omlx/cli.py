@@ -1105,10 +1105,7 @@ Example directory structure:
         action="store_true",
         default=False,
         help=(
-            "Allow the launched session to be reachable via Claude Code's "
-            "cross-session messaging (ListAgents/SendMessage). This requires "
-            "enabling telemetry and feature-flag traffic to Anthropic that is "
-            "otherwise kept disabled by default (Claude integration only)."
+            "Unsupported: cross-session messaging requires telemetry, which is disabled."
         ),
     )
 

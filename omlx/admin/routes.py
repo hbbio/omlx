@@ -55,10 +55,8 @@ from ..model_settings import (
 from ..patches.moe_offload_compat import moe_offload_compatibility
 from ..settings import BURST_DECODE_MODES, SubKeyEntry, burst_decode_env
 from ..utils.hardware import (
-    compute_owner_hash,
     get_chip_name,
     get_gpu_core_count,
-    get_io_platform_uuid,
     get_total_memory_gb,
     parse_chip_info,
 )
@@ -8655,7 +8653,6 @@ async def get_benchmark_results(
         "context_profile": run.request.context_profile.value,
         "results": run.results,
         "error": run.error_message if run.error_message else None,
-        "upload_state": run.upload_state,
     }
 
 
@@ -8674,16 +8671,8 @@ def _local_device_info() -> dict:
 async def get_device_info(
     is_admin: bool = Depends(require_admin),
 ):
-    """Get device hardware info and owner_hash for omlx.ai integration."""
-    device = _local_device_info()
-    owner_hash = None
-    io_uuid = get_io_platform_uuid()
-    if io_uuid:
-        full_hash = compute_owner_hash(
-            io_uuid, device["chip_name"], device["gpu_cores"], device["memory_gb"]
-        )
-        owner_hash = full_hash[:-1]  # Strip verify character for URL
-    return {**device, "owner_hash": owner_hash}
+    """Get local hardware specifications without a device identifier."""
+    return _local_device_info()
 
 
 # =============================================================================

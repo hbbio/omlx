@@ -12,6 +12,18 @@ Features:
 - Tiered cache (GPU + paged SSD offloading)
 """
 
+import os as _os
+
+# Set before importing ML libraries: Hugging Face reads these at import time.
+for _name in (
+    "HF_HUB_DISABLE_TELEMETRY",
+    "DO_NOT_TRACK",
+    "HF_HUB_DISABLE_UPDATE_CHECK",
+):
+    _os.environ[_name] = "1"
+_os.environ["OTEL_SDK_DISABLED"] = "true"
+del _name, _os
+
 from omlx._version import __version__
 
 _LAZY = {
@@ -46,6 +58,7 @@ def __getattr__(name: str):
         globals()[name] = val
         return val
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Request management

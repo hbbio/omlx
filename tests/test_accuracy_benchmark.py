@@ -12,7 +12,6 @@ import omlx.admin.accuracy_benchmark as accuracy_benchmark
 from omlx.admin.accuracy_benchmark import (
     VALID_BENCHMARKS,
     AccuracyBenchmarkRequest,
-    AccuracyBenchmarkRun,
     _accumulated_results,
     add_to_queue,
     cancel_queue,
@@ -810,9 +809,8 @@ class TestQueueChainOwnership:
 # =============================================================================
 
 
-class TestCommunityUpload:
-    """Per-suite upload wiring: local runs upload after each result event,
-    external runs never do, and an upload failure never fails the bench."""
+class TestLocalBenchmarkPrivacy:
+    """Local benchmarks must not send results or identifiers over HTTP."""
 
     def setup_method(self):
         reset_accumulated_results()
@@ -834,7 +832,7 @@ class TestCommunityUpload:
         result = MagicMock(
             benchmark_name=name,
             accuracy=0.75,
-            total_questions=4,
+            total_questions=100,
             correct_count=3,
             time_seconds=1.0,
             category_scores=None,
@@ -848,75 +846,9 @@ class TestCommunityUpload:
         return MagicMock(return_value=evaluator)
 
     @pytest.mark.asyncio
-    async def test_local_run_uploads_per_suite(self):
-        req = AccuracyBenchmarkRequest(
-            model_id="test-model",
-            benchmarks={"mmlu": 4, "gsm8k": 4},
-        )
+    async def test_local_results_never_leave_the_server(self):
+        req = AccuracyBenchmarkRequest(model_id="test-model", benchmarks={"mmlu": 100})
         run = create_run(req)
-
-        ctx = {"submission_group": "group-1"}
-        outcome = {"id": "abc12345", "url": "u", "raw_uploaded": True}
-        mock_build = MagicMock(return_value=ctx)
-        mock_upload = AsyncMock(return_value=outcome)
-
-        with (
-            patch.dict(
-                "omlx.eval.BENCHMARKS",
-                {"mmlu": self._mock_bench_cls("mmlu"),
-                 "gsm8k": self._mock_bench_cls("gsm8k")},
-                clear=True,
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.build_upload_context", mock_build
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.upload_intelligence_result",
-                mock_upload,
-            ),
-        ):
-            await run_accuracy_benchmark(run, self._mock_pool())
-
-        assert run.status == "completed"
-        # One context snapshot per run, one upload per suite, same ctx.
-        mock_build.assert_called_once()
-        assert mock_upload.await_count == 2
-        for call in mock_upload.await_args_list:
-            assert call.args[1] is ctx
-
-        # Event order per suite: result precedes its upload, all before done.
-        types = [e["type"] for e in run.events]
-        assert types.count("upload") == 2
-        assert types.index("done") > max(
-            i for i, t in enumerate(types) if t == "upload"
-        )
-        upload_events = [e for e in run.events if e["type"] == "upload"]
-        assert {e["data"]["benchmark"] for e in upload_events} == {"mmlu", "gsm8k"}
-        assert upload_events[0]["data"]["id"] == "abc12345"
-
-        # The outcome is attached to the shared result dict, so the polling
-        # endpoint (accumulated results) sees it without extra state.
-        for r in get_accumulated_results():
-            assert r["upload"] is outcome
-            assert r["dataset_total"] == 14042
-            assert r["sampling_profile"] == "deterministic"
-
-    @pytest.mark.asyncio
-    async def test_external_run_never_uploads(self):
-        run = create_run(
-            AccuracyBenchmarkRequest(
-                model_id="remote-model",
-                benchmarks={"mmlu": 100},
-                external=_external_dict(),
-            )
-        )
-        mock_adapter = MagicMock()
-        mock_adapter.preflight = AsyncMock()
-        mock_client = MagicMock()
-        mock_client.aclose = AsyncMock()
-        mock_build = MagicMock()
-        mock_upload = AsyncMock()
-
         with (
             patch.dict(
                 "omlx.eval.BENCHMARKS",
@@ -924,82 +856,13 @@ class TestCommunityUpload:
                 clear=True,
             ),
             patch(
-                "omlx.admin.accuracy_benchmark.ExternalAPIClient",
-                return_value=mock_client,
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.ExternalChatAdapter",
-                return_value=mock_adapter,
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.build_upload_context", mock_build
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.upload_intelligence_result",
-                mock_upload,
-            ),
-        ):
-            await run_accuracy_benchmark(run, MagicMock())
-
-        assert run.status == "completed"
-        mock_build.assert_not_called()
-        mock_upload.assert_not_awaited()
-        assert "upload" not in [e["type"] for e in run.events]
-        assert "upload" not in run.results[0]
-
-    @pytest.mark.asyncio
-    async def test_upload_context_failure_only_disables_upload(self):
-        run = create_run(
-            AccuracyBenchmarkRequest(model_id="test-model", benchmarks={"mmlu": 4})
-        )
-        mock_upload = AsyncMock()
-
-        with (
-            patch.dict(
-                "omlx.eval.BENCHMARKS",
-                {"mmlu": self._mock_bench_cls("mmlu")},
-                clear=True,
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.build_upload_context",
-                MagicMock(side_effect=RuntimeError("no hardware info")),
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.upload_intelligence_result",
-                mock_upload,
-            ),
+                "requests.sessions.Session.request",
+                side_effect=AssertionError("Unexpected network request"),
+            ) as network,
         ):
             await run_accuracy_benchmark(run, self._mock_pool())
-
         assert run.status == "completed"
-        mock_upload.assert_not_awaited()
-        assert "upload" not in [e["type"] for e in run.events]
-
-    @pytest.mark.asyncio
-    async def test_upload_error_outcome_does_not_fail_bench(self):
-        run = create_run(
-            AccuracyBenchmarkRequest(model_id="test-model", benchmarks={"mmlu": 4})
-        )
-        error_outcome = {"error": "HTTP 500"}
-
-        with (
-            patch.dict(
-                "omlx.eval.BENCHMARKS",
-                {"mmlu": self._mock_bench_cls("mmlu")},
-                clear=True,
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.build_upload_context",
-                MagicMock(return_value={"submission_group": "g"}),
-            ),
-            patch(
-                "omlx.admin.accuracy_benchmark.upload_intelligence_result",
-                AsyncMock(return_value=error_outcome),
-            ),
-        ):
-            await run_accuracy_benchmark(run, self._mock_pool())
-
-        assert run.status == "completed"
-        upload_event = next(e for e in run.events if e["type"] == "upload")
-        assert upload_event["data"]["error"] == "HTTP 500"
-        assert run.results[0]["upload"] is error_outcome
+        network.assert_not_called()
+        assert run.events[-1]["type"] == "done"
+        assert all("upload" not in result for result in get_accumulated_results())
+        assert not any(event["type"].startswith("upload") for event in run.events)

@@ -27,7 +27,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import mlx.core as mx
 from mlx_lm.generate import (
@@ -76,11 +76,6 @@ from .speculative.processing_sampler import (
     MTPProcessorContractError,
     supports_vlm_mtp_processing,
 )
-from .speculative.vlm_mtp import (
-    VLMMTPDrafter,
-    run_vlm_mtp_decode,
-    vlm_mtp_positioned_sampling_available,
-)
 from .utils.fatal import FATAL_TEARDOWN_TIMEOUT_S, fatal_exit
 from .utils.generation_config import load_generation_config_token_ids
 from .utils.hardware import format_bytes
@@ -93,6 +88,22 @@ from .utils.metal_sync import (
 from .utils.proc_memory import get_phys_footprint
 from .utils.sampling import make_sampler as omlx_make_sampler
 from .utils.tokenizer import create_streaming_detokenizer
+
+if TYPE_CHECKING:
+    from .speculative.vlm_mtp import VLMMTPDrafter
+
+
+def run_vlm_mtp_decode(*args, **kwargs):
+    # Text-only installs do not need mlx-vlm or its audio dependencies.
+    from .speculative.vlm_mtp import run_vlm_mtp_decode as decode
+
+    return decode(*args, **kwargs)
+
+
+def vlm_mtp_positioned_sampling_available(model):
+    from .speculative.vlm_mtp import vlm_mtp_positioned_sampling_available as available
+
+    return available(model)
 
 
 def _compact_boundary_snapshot_value(
@@ -9068,7 +9079,7 @@ class Scheduler:
 
     def set_vlm_mtp_drafter(
         self,
-        drafter: VLMMTPDrafter | None,
+        drafter: "VLMMTPDrafter | None",
         draft_block_size: int | None = None,
     ) -> None:
         """Attach an MTP drafter for VLM MTP speculative decode.

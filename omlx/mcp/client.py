@@ -149,7 +149,7 @@ class MCPClient:
             from mcp.client.stdio import stdio_client
         except ImportError:
             raise ImportError(
-                "MCP SDK required for MCP support. Install with: pip install mcp"
+                "MCP SDK required for MCP support. Install with: uv sync --locked --no-dev --extra mcp"
             )
 
         server_params = StdioServerParameters(
@@ -178,7 +178,7 @@ class MCPClient:
             from mcp.client.sse import sse_client
         except ImportError:
             raise ImportError(
-                "MCP SDK required for MCP support. Install with: pip install mcp"
+                "MCP SDK required for MCP support. Install with: uv sync --locked --no-dev --extra mcp"
             )
 
         # Create SSE client context
@@ -201,7 +201,7 @@ class MCPClient:
             import httpx
         except ImportError:
             raise ImportError(
-                "MCP SDK required for MCP support. Install with: pip install mcp"
+                "MCP SDK required for MCP support. Install with: uv sync --locked --no-dev --extra mcp"
             )
 
         headers = self.config.headers or {}

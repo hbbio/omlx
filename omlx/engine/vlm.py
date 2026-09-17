@@ -1838,7 +1838,7 @@ class VLMBatchedEngine(BaseEngine):
             else:
                 logger.info(
                     "Structured output requires xgrammar. "
-                    "Install with: pip install 'omlx[grammar]'"
+                    "Install with: uv sync --locked --no-dev --extra grammar"
                 )
         return self._grammar_compiler
 
@@ -1906,7 +1906,15 @@ class VLMBatchedEngine(BaseEngine):
         if self._loaded:
             return
 
-        from mlx_vlm.utils import load as vlm_load
+        try:
+            from mlx_vlm.utils import load as vlm_load
+        except ModuleNotFoundError as exc:
+            if exc.name != "mlx_vlm":
+                raise
+            raise ImportError(
+                "Vision models require the vision extra. Install with: "
+                "uv sync --locked --no-dev --extra vision"
+            ) from exc
 
         from ..engine_core import AsyncEngineCore, EngineConfig
         from ..scheduler import SchedulerConfig

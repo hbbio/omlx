@@ -349,7 +349,7 @@ class MLXEmbeddingModel:
         except ImportError:
             raise ImportError(
                 "mlx-embeddings is required for embedding generation. "
-                "Install with: pip install mlx-embeddings"
+                "Install with: uv sync --locked --no-dev --extra embeddings"
             )
         except FileNotFoundError:
             raise FileNotFoundError(

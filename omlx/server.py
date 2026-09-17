@@ -4768,7 +4768,7 @@ def _compile_grammar_for_request(
             else:
                 detail = (
                     "Structured output requires xgrammar. "
-                    "Install with: pip install 'omlx[grammar]'"
+                    "Install with: uv sync --locked --no-dev --extra grammar"
                 )
             raise HTTPException(status_code=400, detail=detail)
         if response_format is not None:
@@ -8155,7 +8155,7 @@ async def init_mcp(config_path: str):
     except ImportError:
         logger.warning(
             "MCP SDK not installed. MCP features disabled. "
-            "Install with: pip install mcp"
+            "Install with: uv sync --locked --no-dev --extra mcp"
         )
         return
     except Exception as e:

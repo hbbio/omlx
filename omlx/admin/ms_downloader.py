@@ -709,7 +709,7 @@ class MSDownloader:
         if not MS_SDK_AVAILABLE:
             raise RuntimeError(
                 "ModelScope SDK not installed. "
-                "Install with: pip install \"omlx[modelscope]\""
+                "Install with: uv sync --locked --no-dev --extra modelscope"
             )
 
         model_id = model_id.strip()

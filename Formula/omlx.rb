@@ -13,6 +13,7 @@ class Omlx < Formula
          "Build native custom kernels for Bonsai, GLM-5.2, MiniMax M3 and Qwen3.5/3.6/4 acceleration"
   option "with-grammar", "Install xgrammar for structured output (requires torch, ~2GB)"
 
+  depends_on "uv" => :build
   depends_on "rust" => :build
   depends_on arch: :arm64
   depends_on macos: :sequoia
@@ -25,22 +26,6 @@ class Omlx < Formula
     skip_clean "libexec" if MacOS.version >= "27"
   end
 
-  # mlx-audio pins mlx-lm==0.31.1 which conflicts with omlx's git-pinned
-  # mlx-lm. Fetch source separately so we can patch the pin before install.
-  resource "mlx-audio" do
-    url "https://github.com/Blaizzy/mlx-audio.git",
-      revision: "51753266e0a4f766fd5e6fbc46652224efc23981"
-  end
-
-  # Kokoro's English G2P path uses misaki + spaCy. Bundle the spaCy
-  # language model so the first TTS request does not download into the
-  # Homebrew venv at runtime.
-  resource "en-core-web-sm" do
-    url "https://github.com/explosion/spacy-models/releases/download/" \
-        "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
-    sha256 "1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85"
-  end
-
   service do
     run [opt_bin/"omlx", "serve"]
     keep_alive true
@@ -51,8 +36,10 @@ class Omlx < Formula
   end
 
   def install
-    # Create venv with pip so dependency resolution works properly
-    system "python3.11", "-m", "venv", libexec
+    uv = Formula["uv"].opt_bin/"uv"
+    ENV["UV_PROJECT_ENVIRONMENT"] = libexec
+    ENV["UV_PYTHON_DOWNLOADS"] = "never"
+    odie "The source archive must include uv.lock; use the locked CLI checkout" unless (buildpath/"uv.lock").exist?
 
     # Build native extensions from source with headerpad so Homebrew can
     # rewrite Mach-O install names to absolute Cellar/opt paths. Rust/maturin
@@ -62,7 +49,7 @@ class Omlx < Formula
     ENV.append "RUSTFLAGS", "-C link-arg=-Wl,-headerpad_max_install_names"
 
     no_binary = "cohere_melody,pydantic-core,rpds-py,tiktoken"
-    pip_flags = []
+    uv_flags = []
     if MacOS.version >= "27"
       # macOS 27's dyld requires the LC_SYMTAB string pool to start on an
       # 8-byte boundary; prebuilt Rust wheels aligned to 4 bytes fail dlopen
@@ -72,16 +59,12 @@ class Omlx < Formula
       no_binary += ",tokenizers"
       ENV["CARGO_PROFILE_RELEASE_STRIP"] = "false"
       ENV["MATURIN_STRIP"] = "false"
-      # Pip reuses locally built wheels even under --no-binary, so a wheel
-      # cached before the strip guards existed stays corrupted. Bypass the
-      # cache entirely.
-      pip_flags << "--no-cache-dir"
+      # Bypass cached native wheels while applying the beta linker workaround.
+      uv_flags << "--no-cache"
     end
 
-    # Every pip step must share these flags; a later step without --no-binary
-    # (e.g. mlx-audio) can clobber a source-built package with a prebuilt
-    # wheel that fails dlopen on macOS 27 (#2110).
-    pip_install = [libexec/"bin/pip", "install", *pip_flags, "--no-binary", no_binary]
+    uv_flags += no_binary.split(",").flat_map { |name| ["--no-binary-package", name] }
+    uv_flags += ["--extra", "grammar"] if build.with?("grammar")
 
     if build.with?("custom-kernel")
       kernel_sources = CUSTOM_KERNELS.map do |kernel|
@@ -98,9 +81,8 @@ class Omlx < Formula
       ENV.append "CMAKE_ARGS", "-DPython_EXECUTABLE=#{libexec}/bin/python"
     end
 
-    # Install omlx (with optional grammar extra for structured output)
-    install_spec = build.with?("grammar") ? "#{buildpath}[grammar]" : buildpath.to_s
-    system(*pip_install, install_spec)
+    system uv, "sync", "--locked", "--no-dev", "--no-editable",
+           "--python", Formula["python@3.11"].opt_bin/"python3.11", *uv_flags
 
     if build.with?("custom-kernel")
       # Run from libexec so buildpath's raw omlx/ source tree doesn't shadow
@@ -109,25 +91,6 @@ class Omlx < Formula
         verify_custom_kernels(libexec/"bin/python")
       end
     end
-
-    # Install mlx-audio with patched mlx-lm pin to avoid version conflict
-    resource("mlx-audio").stage do
-      inreplace "pyproject.toml", '"mlx-lm==0.31.1"', '"mlx-lm>=0.31.1"'
-      system(*pip_install, ".[all]")
-    end
-
-    # Install the spaCy English model required by misaki for Kokoro TTS.
-    # Homebrew's cached resource path is hash-prefixed, which pip rejects
-    # as an invalid wheel filename. Copy it back to the canonical basename.
-    spacy_model_wheel = buildpath/"en_core_web_sm-3.8.0-py3-none-any.whl"
-    cp resource("en-core-web-sm").cached_download, spacy_model_wheel
-    system libexec/"bin/pip", "install", "--no-deps",
-           spacy_model_wheel
-    system libexec/"bin/python", "-c",
-           "import spacy; spacy.load('en_core_web_sm')"
-
-    # python-multipart is declared in omlx's [audio] extra, not in mlx-audio
-    system(*pip_install, "python-multipart>=0.0.5")
 
     bin.install_symlink Dir[libexec/"bin/omlx"]
   end
@@ -244,8 +207,6 @@ class Omlx < Formula
 
   test do
     assert_match version.to_s, shell_output("#{bin}/omlx --version")
-    system libexec/"bin/python", "-c",
-           "import spacy; spacy.load('en_core_web_sm')"
     verify_custom_kernels(libexec/"bin/python") if build.with?("custom-kernel")
   end
 end

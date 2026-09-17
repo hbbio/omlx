@@ -37,7 +37,6 @@ WORKFLOW_PATH = (
 )
 
 MACOS_27_GUARD = 'MacOS.version >= "27"'
-SPACY_MODEL_SHA256 = "1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85"
 
 
 @pytest.fixture(scope="module")
@@ -62,14 +61,6 @@ class TestFormulaReleaseUpdate:
         assert "s|^  sha256" in sha_update
         assert '"$|  sha256' in sha_update
 
-    def test_spacy_model_checksum_is_independent(self, formula):
-        """The bundled spaCy wheel checksum must survive source version bumps."""
-        resource_start = formula.index('resource "en-core-web-sm" do')
-        resource_end = formula.index("\n  end", resource_start)
-        resource_block = formula[resource_start:resource_end]
-
-        assert f'sha256 "{SPACY_MODEL_SHA256}"' in resource_block
-
 
 class TestMacOS27Workarounds:
     def test_tokenizers_built_from_source_on_macos_27(self, formula):
@@ -80,7 +71,7 @@ class TestMacOS27Workarounds:
     def test_base_no_binary_list_unconditional(self, formula):
         """Older macOS keeps the existing source-build list unchanged."""
         assert 'no_binary = "cohere_melody,pydantic-core,rpds-py,tiktoken"' in formula
-        assert '"--no-binary", no_binary' in formula
+        assert '["--no-binary-package", name]' in formula
 
     def test_release_stripping_disabled_on_macos_27(self, formula):
         """The beta strip binary corrupts dylibs; Cargo/maturin must not strip."""
@@ -92,28 +83,10 @@ class TestMacOS27Workarounds:
         assert "on_macos do" in formula
         assert f'skip_clean "libexec" if {MACOS_27_GUARD}' in formula
 
-    def test_pip_cache_bypassed_on_macos_27(self, formula):
+    def test_uv_cache_bypassed_on_macos_27(self, formula):
         """Pip reuses locally built wheels even under --no-binary, so a
         wheel cached before the strip guards existed stays corrupted."""
-        assert 'pip_flags << "--no-cache-dir"' in formula
-
-
-class TestSharedPipFlags:
-    def test_shared_pip_install_array(self, formula):
-        """All pip steps must share the --no-binary/--no-cache-dir flags."""
-        assert (
-            'pip_install = [libexec/"bin/pip", "install", *pip_flags,'
-            ' "--no-binary", no_binary]' in formula
-        )
-        assert "system(*pip_install, install_spec)" in formula
-        assert 'system(*pip_install, ".[all]")' in formula
-        assert 'system(*pip_install, "python-multipart>=0.0.5")' in formula
-
-    def test_no_bare_pip_install_besides_spacy_wheel(self, formula):
-        """The only direct pip invocation is the --no-deps local spaCy model
-        wheel; any new bare `pip install` would bypass the shared flags."""
-        assert formula.count('bin/pip", "install"') == 2
-        assert 'system libexec/"bin/pip", "install", "--no-deps"' in formula
+        assert 'uv_flags << "--no-cache"' in formula
 
 
 class TestCustomKernelBuild:
@@ -135,3 +108,14 @@ class TestCustomKernelBuild:
     def test_kernel_verification_not_shadowed_by_buildpath(self, formula):
         """Import check must run outside buildpath's raw omlx/ source tree."""
         assert "Dir.chdir(libexec)" in formula
+
+
+class TestLockedUvInstall:
+    def test_single_locked_runtime_install(self, formula):
+        assert 'depends_on "uv" => :build' in formula
+        assert 'Formula["uv"].opt_bin/"uv"' in formula
+        assert '"sync", "--locked", "--no-dev", "--no-editable"' in formula
+        assert 'ENV["UV_PROJECT_ENVIRONMENT"] = libexec' in formula
+        assert 'ENV["UV_PYTHON_DOWNLOADS"] = "never"' in formula
+        assert "bin/pip" not in formula
+        assert 'resource "mlx-audio"' not in formula

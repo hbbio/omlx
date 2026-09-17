@@ -116,8 +116,7 @@ omlx/admin/tailwindcss-*
 # Swift rewrite architecture notes — kept locally for reference, not tracked.
 docs/native_app_architecture.md
 
-# UV lockfile
-uv.lock
+# uv.lock is committed so installs use reviewed dependency versions.
 # generated TurboQuant memory report (machine-specific)
 tq_batch_memory.md
 

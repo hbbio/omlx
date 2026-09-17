@@ -30,31 +30,32 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
+          version: "0.12.15"
+          enable-cache: true
 
       - name: Build wheel with native custom kernels
         env:
           OMLX_WITH_CUSTOM_KERNEL: "1"
-        # --no-isolation with preinstalled build deps: CMake's Python discovery
-        # does not reliably resolve pip's isolated build env on the hosted
+        # Locked build group with --no-build-isolation: CMake's Python discovery
+        # does not reliably resolve isolated build environments on the hosted
         # runners (it found the system framework Python without nanobind), so
         # we build against the job's Python and pin it for CMake explicitly.
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install build setuptools wheel "cmake>=3.27" "nanobind==2.15.0" "mlx==0.32.2"
-          export CMAKE_ARGS="-DPython_EXECUTABLE=$(python -c 'import sys; print(sys.executable)')"
-          python -m build --wheel --no-isolation
+          uv sync --locked --python "${{ matrix.python-version }}" --only-group build
+          export CMAKE_ARGS="-DPython_EXECUTABLE=$PWD/.venv/bin/python"
+          uv build --wheel --no-build-isolation --python .venv/bin/python
 
       - name: Smoke-test wheel (native kernels must import and report available)
         run: |
           echo "--- native artifacts in the wheel:"
           unzip -l dist/*.whl | grep -E "_ext|dylib|metallib" || { echo "no native artifacts in wheel"; exit 1; }
-          python -m venv /tmp/wheel-smoke
-          /tmp/wheel-smoke/bin/pip install --quiet dist/*.whl
+          uv export --locked --no-dev --no-emit-project --format pylock.toml --output-file /tmp/pylock.toml
+          uv venv --python "${{ matrix.python-version }}" /tmp/wheel-smoke
+          uv pip sync --python /tmp/wheel-smoke/bin/python /tmp/pylock.toml
+          uv pip install --python /tmp/wheel-smoke/bin/python --no-deps dist/*.whl
           # run from outside the checkout so `import omlx` resolves to the
           # installed wheel, not the source tree in cwd
           cd /tmp

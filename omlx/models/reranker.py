@@ -857,7 +857,7 @@ class MLXRerankerModel:
         except ImportError as e:
             raise ImportError(
                 "mlx-lm, mlx-embeddings, or transformers is required for reranking. "
-                "Install with: pip install mlx-lm mlx-embeddings transformers"
+                "Install with: uv sync --locked --no-dev --extra embeddings"
             ) from e
         except FileNotFoundError:
             raise FileNotFoundError(

@@ -220,7 +220,7 @@ class BatchedEngine(BaseEngine):
             else:
                 logger.info(
                     "Structured output requires xgrammar. "
-                    "Install with: pip install 'omlx[grammar]'"
+                    "Install with: uv sync --locked --no-dev --extra grammar"
                 )
         return self._grammar_compiler
 

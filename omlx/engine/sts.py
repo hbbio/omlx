@@ -311,7 +311,7 @@ class STSEngine(BaseNonStreamingEngine):
             except ImportError as exc:
                 raise ImportError(
                     "mlx-audio is required for STS inference. "
-                    "Install it with: pip install 'omlx[audio]'"
+                    "Install it with: uv sync --locked --no-dev --extra audio"
                 ) from exc
 
         loop = asyncio.get_running_loop()

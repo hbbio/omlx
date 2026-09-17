@@ -6,11 +6,14 @@ const assert = require('node:assert/strict');
 const source = fs.readFileSync(
     path.join(__dirname, '../omlx/admin/static/js/dashboard.js'), 'utf8'
 );
+const translations = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '../omlx/admin/i18n/en.json'), 'utf8'
+));
 const context = {
     localStorage: {getItem: () => null},
     THEME_STORAGE_KEY: 'theme',
     ENHANCED_READABILITY_KEY: 'readability',
-    window: {},
+    window: {t: key => translations[key] || key},
     navigator: {language: 'en'},
     document: {},
 };

@@ -427,7 +427,8 @@ def test_sequential_distributed_cancellation_exits_all_ranks_without_upstream_er
                 has_tool_calling=False,
                 has_thinking=False,
                 tool_parser=lambda *_args: {},
-                sequences={},
+                text_sm=None,
+                initial_state="normal",
                 prompt=[],
             )
             ctx.stop()
@@ -591,6 +592,30 @@ def test_serving_starts_the_heartbeat_without_the_caller_asking(monkeypatch):
         heartbeat = telemetry._heartbeat_thread
 
     assert not heartbeat.is_alive(), "the heartbeat outlived the serving block"
+
+
+def test_dead_generation_thread_reports_its_error(monkeypatch):
+    import mlx_lm.server as mlx_server
+
+    class FakeResponseGenerator:
+        def _generate(self):
+            raise AttributeError("'SimpleNamespace' object has no attribute 'kv_bits'")
+
+    class FakeBatchGenerator:
+        pass
+
+    monkeypatch.setattr(mlx_server, "ResponseGenerator", FakeResponseGenerator)
+    monkeypatch.setattr(mlx_server, "BatchGenerator", FakeBatchGenerator)
+    failures: list[str] = []
+
+    with install_server_telemetry(_Marker(), on_generation_failed=failures.append):
+        generator = mlx_server.ResponseGenerator()
+        with pytest.raises(AttributeError):
+            generator._generate()
+
+    assert failures == [
+        "AttributeError: 'SimpleNamespace' object has no attribute 'kv_bits'"
+    ]
 
 
 class _BatchGenerator:

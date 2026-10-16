@@ -10,10 +10,6 @@
 <p align="center"><b>Mac向けに最適化されたLLM推論サーバー</b><br>連続バッチングと階層型KVキャッシュを、メニューバーから直接管理します。</p>
 
 <p align="center">
-<a href="https://www.buymeacoffee.com/jundot"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40"></a>
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
   <img src="https://img.shields.io/badge/python-3.10+-green" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/platform-Apple%20Silicon-black?logo=apple" alt="Apple Silicon">
@@ -56,7 +52,8 @@
 
 ```bash
 brew tap jundot/omlx https://github.com/jundot/omlx
-brew install omlx
+brew install omlx --with-custom-kernel   # ネイティブカスタムカーネル込み（フルXcodeが必要）
+# フルXcodeがない場合は brew install omlx でカーネルなしでインストール
 
 # 最新バージョンへアップグレード
 brew update && brew upgrade omlx
@@ -87,7 +84,13 @@ uv sync --locked --no-dev --extra mcp   # MCP（Model Context Protocol）サポ�
 OMLX_WITH_CUSTOM_KERNEL=1 uv sync --locked --no-dev --reinstall-package omlx
 ```
 
-Python 3.10+とApple Silicon（M1/M2/M3/M4/M5）が必要です。
+macOS 15.0+（Sequoia）、Python 3.11–3.13、Apple Silicon（M1/M2/M3/M4/M5）が必要です。
+
+> Native kernels require full Xcode with the Metal toolchain. Use `make install-no-kernels` without it; see [CLI setup](README.md#from-source).
+>
+> ```bash
+> .venv/bin/python -c "from omlx.custom_kernels import native_kernel_status; print(native_kernel_status())"
+> ```
 
 ## クイックスタート
 
@@ -149,7 +152,7 @@ mlx-lmのBatchGeneratorを通じて同時リクエストを処理します。最
 
 ### Claude Code最適化
 
-Claude Codeで小さなコンテキストモデルを実行するためのコンテキストスケーリングをサポートします。報告されるトークン数をスケーリングすることで自動圧縮が適切なタイミングでトリガーされ、長いプリフィル中の読み取りタイムアウトを防ぐSSE keep-aliveを提供します。
+Claude Codeで小さなコンテキストモデルを実行するため、トークン数をスケーリングする代わりにモデルの実際のコンテキストウィンドウで自動圧縮を制御し、長いプリフィル中の読み取りタイムアウトを防ぐSSE keep-aliveを提供します。
 
 ### マルチモデルサービング
 
@@ -192,7 +195,7 @@ Claude Codeで小さなコンテキストモデルを実行するためのコン
 
 ### 統合
 
-管理画面からOpenClaw、OpenCode、Codex、Hermes Agent、Copilot、Piをワンクリックで設定できます。設定ファイルを手動で編集する必要はありません。
+管理画面からOpenClaw、OpenCode、Codex、Hermes Agent、Copilot、Pi、DeepSeek Harnessをワンクリックで設定できます。設定ファイルを手動で編集する必要はありません。
 
 <p align="center">
   <img src="docs/images/omlx_integrations.png" alt="oMLX 統合" width="720">
@@ -208,7 +211,7 @@ Claude Codeで小さなコンテキストモデルを実行するためのコン
 
 ### API互換性
 
-OpenAIとAnthropic APIのドロップイン代替です。ストリーミング使用統計（`stream_options.include_usage`）、Anthropic adaptive thinking、ビジョン入力（base64、URL）をサポートします。
+OpenAIとAnthropic APIのドロップイン代替です。ストリーミング使用統計（`stream_options.include_usage`）、llama.cpp互換のprefill進捗（`return_progress`）、Anthropic adaptive thinking、ビジョン入力（base64、URL）をサポートします。
 
 | エンドポイント | 説明 |
 |----------|------|
@@ -217,7 +220,11 @@ OpenAIとAnthropic APIのドロップイン代替です。ストリーミング�
 | `POST /v1/messages` | Anthropic Messages API |
 | `POST /v1/embeddings` | テキストエンベディング |
 | `POST /v1/rerank` | ドキュメントリランキング |
+| `POST /v1/systemone` | Decision モデルまたはチャットモデルによる型付き判定 (TypeSafe System One) |
 | `GET /v1/models` | 利用可能なモデル一覧 |
+| `POST /tokenize`, `POST /detokenize` | vLLM 互換トークナイザー API（`/v1` 配下でも利用可） |
+
+設定、モデル、ダウンロード、量子化、ベンチマークを扱う管理APIは、メインAPIキーをBearerトークンとして受け付け、headlessモードでも動作します。[Admin API](docs/admin-api.md)を参照してください。
 
 ### ツール呼び出し＆構造化出力
 
@@ -256,8 +263,9 @@ mlx-lmで利用可能なすべての関数呼び出し形式、JSONスキーマ�
 | LLM | [mlx-lm](https://github.com/ml-explore/mlx-lm)がサポートするすべてのモデル |
 | VLM | Qwen3.5シリーズ、GLM-4V、Pixtralおよびその他の[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)モデル |
 | OCR | DeepSeek-OCR、DOTS-OCR、GLM-OCR |
-| エンベディング | BERT、BGE-M3、ModernBERT |
+| エンベディング | BERT、BGE-M3、ModernBERT、EmbeddingGemma 2 |
 | リランカー | ModernBERT、XLM-RoBERTa |
+| Decision | Clef、Clef-Flash、OpenJev、Decision 3.0 (d3, d3-flash, d3-mini, d3-nano, d3-lite, d3-edge) |
 
 ## CLI 設定
 
@@ -283,6 +291,9 @@ mlx-lmで利用可能なすべての関数呼び出し形式、JSONスキーマ�
 # APIキー認証
 .venv/bin/omlx serve --model-dir ~/models --api-key your-secret-key
 # Localhost専用: 管理画面のグローバル設定で検証をスキップ
+
+# Web UIなしで推論・管理APIのみ起動（設定には保存されません）
+omlx serve --model-dir ~/models --headless
 ```
 
 すべての設定は`/admin`のWeb管理画面からも設定できます。設定は`~/.omlx/settings.json`に保存され、CLIフラグが優先されます。
@@ -297,7 +308,8 @@ FastAPI Server (OpenAI / Anthropic API)
     │   ├── BatchedEngine (LLM、連続バッチング)
     │   ├── VLMEngine (ビジョン言語モデル)
     │   ├── EmbeddingEngine
-    │   └── RerankerEngine
+    │   ├── RerankerEngine
+    │   └── DecisionEngine
     │
     ├── ProcessMemoryEnforcer (合計メモリ制限、TTLチェック)
     │
@@ -314,12 +326,25 @@ FastAPI Server (OpenAI / Anthropic API)
 
 ## 開発
 
+### ビルドコマンド
+
+| コマンド | 内容 |
+|---|---|
+| `make install` | サーバーとWeb UIをeditableインストールし、ネイティブカスタムカーネルもビルド |
+| `make install-no-kernels` | カーネルなしで同じインストール（フルXcodeがない環境向け） |
+| `make mcp` | MCP（Model Context Protocol）サポートを追加 |
+| `make dev` | `make install`と同じで開発ツール付き（`make dev-no-kernels`はカーネルなし） |
+| `make kernels` | 既存のネイティブカスタムカーネルのビルドを削除して再コンパイルし、すべて読み込めるか確認 |
+| `make web` | Web UIのCSSを再ビルドし、翻訳ファイルを正規化 |
+
+ネイティブカスタムカーネルのビルドにはMetalツールチェーン入りのフルXcodeが必要です（`xcodebuild -downloadComponent MetalToolchain`）。
+
 ### CLIサーバー
 
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
+uv sync --locked --extra vision --extra embeddings --extra documents --extra web-search --extra cluster
 uv run --no-sync pytest -m "not slow and not integration"
 ```
 

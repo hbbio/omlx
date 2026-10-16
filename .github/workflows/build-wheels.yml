@@ -52,6 +52,7 @@ jobs:
         run: |
           echo "--- native artifacts in the wheel:"
           unzip -l dist/*.whl | grep -E "_ext|dylib|metallib" || { echo "no native artifacts in wheel"; exit 1; }
+          unzip -l dist/*.whl | grep -q "omlx_web/templates/dashboard.html" || { echo "web UI missing from wheel"; exit 1; }
           uv export --locked --no-dev --no-emit-project --format pylock.toml --output-file /tmp/pylock.toml
           uv venv --python "${{ matrix.python-version }}" /tmp/wheel-smoke
           uv pip sync --python /tmp/wheel-smoke/bin/python /tmp/pylock.toml
@@ -81,7 +82,7 @@ jobs:
 
           # Exercise a real primitive from the newest native package, not just
           # its nanobind ABI probe, so the wheel also proves dylib/metallib
-          # lookup and MLX 0.32.2 runtime dispatch.
+          # lookup and MLX 0.32.4 runtime dispatch.
           from omlx.custom_kernels.decode_fast import fast as decode_fast
 
           mx.random.seed(3142)

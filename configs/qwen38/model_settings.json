@@ -7,7 +7,7 @@
       "is_pinned": true,
       "max_context_window": 65536,
       "mtp_enabled": true,
-      "mtp_num_draft_tokens": 3,
+      "mtp_adaptive_max_depth": 4,
       "turboquant_kv_enabled": false,
       "specprefill_enabled": false,
       "dflash_enabled": false,

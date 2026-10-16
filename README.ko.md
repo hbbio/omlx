@@ -10,10 +10,6 @@
 <p align="center"><b>Mac에 최적화된 LLM 추론 서버</b><br>Continuous Batching과 다단계 KV 캐시로 최적화된 추론 서버를, 메뉴바에서 편리하게</p>
 
 <p align="center">
-<a href="https://www.buymeacoffee.com/jundot"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40"></a>
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
   <img src="https://img.shields.io/badge/python-3.11--3.13-green" alt="Python 3.11-3.13">
   <img src="https://img.shields.io/badge/platform-Apple%20Silicon-black?logo=apple" alt="Apple Silicon">
@@ -56,7 +52,8 @@
 
 ```bash
 brew tap jundot/omlx https://github.com/jundot/omlx
-brew install jundot/omlx/omlx
+brew install jundot/omlx/omlx --with-custom-kernel   # 네이티브 커스텀 커널 포함 (전체 Xcode 필요)
+# 전체 Xcode가 없다면 brew install jundot/omlx/omlx 로 커널 없이 설치
 
 # 최신 버전으로 업그레이드
 brew update && brew upgrade omlx
@@ -90,18 +87,10 @@ OMLX_WITH_CUSTOM_KERNEL=1 uv sync --locked --no-dev --reinstall-package omlx
 
 macOS 15.0+ (Sequoia), Python 3.11–3.13, Apple Silicon (M1/M2/M3/M4/M5)이 필요합니다.
 
-> **네이티브 커스텀 커널 관련 노트:** 일반 `uv sync --locked --no-dev` 는 커널을 빌드하지
-> 않으며, 해당 모델 계열은 아무런 경고 없이 훨씬 느린 일반 경로로 폴백합니다.
-> GLM-5.2의 경우 fused DSA 프리필이 커널을 쓸 때 약 30배 빠르고(M3 Ultra에서 845 vs
-> ~29 tok/s 측정), 폴백 경로는 메모리도 더 씁니다(#2137). 커널 빌드에는 Metal
-> 툴체인이 필요한데 Command Line Tools만으로는 제공되지 않습니다(`xcrun: error:
-> unable to find utility "metal"`): 전체 Xcode를 설치하거나, 커널이 미리 컴파일되어
-> 포함된 공식 DMG를 사용하세요. Homebrew에서는 `brew install jundot/omlx/omlx --HEAD
-> --with-custom-kernel` 로 빌드할 수 있지만 이 빌드에도 전체 Xcode가 필요합니다.
-> 설치 확인:
+> Native kernels require full Xcode with the Metal toolchain. Use `make install-no-kernels` without it; see [CLI setup](README.md#from-source).
 >
 > ```bash
-> python -c "from omlx.custom_kernels import native_kernel_status; print(native_kernel_status())"
+> .venv/bin/python -c "from omlx.custom_kernels import native_kernel_status; print(native_kernel_status())"
 > ```
 
 ## 빠른 시작
@@ -109,7 +98,7 @@ macOS 15.0+ (Sequoia), Python 3.11–3.13, Apple Silicon (M1/M2/M3/M4/M5)이 필
 ### CLI
 
 ```bash
-# 관리형 백그라운드 서버 (macOS 앱 또는 Homebrew 설치)
+# 관리형 백그라운드 서버 (Homebrew 설치)
 omlx start
 omlx stop
 omlx restart
@@ -163,7 +152,7 @@ Apple Silicon에서 텍스트 LLM, 비전-언어 모델(VLM), OCR 모델, 임베
 balanced, throughput 프로파일에서 coalesced 배칭, 프롬프트 캐시 어피니티, 회전 KV
 한도, Ring 연결 튜닝, 그리고 기능 게이트가 적용된 실험적 토큰 전용 출력 경로를
 설정할 수 있습니다. 설정 방법, 보안 경계, 현재 제약, 실제 하드웨어 검증 체크리스트는
-[Mac 간 분산 추론](docs/distributed-cluster.md)을 참조하세요.
+[Mac 간 분산 추론](docs/experimental/distributed-cluster.md)을 참조하세요.
 
 ### 비전-언어 모델
 
@@ -186,7 +175,7 @@ mlx-lm의 BatchGenerator를 통해 동시 요청을 처리합니다. 최대 동�
 
 ### Claude Code 최적화
 
-Claude Code에서 작은 컨텍스트 모델을 실행하기 위한 컨텍스트 스케일링을 지원합니다. Claude code에 리포팅되는 토큰 수를 스케일링하여 자동 Compact가 적절한 타이밍에 트리거되고, 긴 프리필 동안 읽기 타임아웃을 방지하는 SSE keep-alive를 제공합니다.
+Claude Code에서 작은 컨텍스트 모델을 실행할 수 있도록 토큰 수를 스케일링하는 대신 모델의 실제 컨텍스트 윈도우를 기준으로 자동 Compact를 트리거하고, 긴 프리필 동안 읽기 타임아웃을 방지하는 SSE keep-alive를 제공합니다.
 
 ### 멀티 모델 서빙
 
@@ -229,7 +218,7 @@ Claude Code에서 작은 컨텍스트 모델을 실행하기 위한 컨텍스트
 
 ### 통합
 
-관리자 대시보드에서 OpenClaw, OpenCode, Codex, Hermes Agent, Copilot, Pi를 원클릭으로 설정합니다. 설정 파일을 수동으로 편집할 필요가 없습니다.
+관리자 대시보드에서 OpenClaw, OpenCode, Codex, Hermes Agent, Copilot, Pi, DeepSeek Harness를 원클릭으로 설정합니다. 설정 파일을 수동으로 편집할 필요가 없습니다.
 
 <p align="center">
   <img src="docs/images/omlx_integrations.png" alt="oMLX 통합" width="720">
@@ -245,7 +234,7 @@ Claude Code에서 작은 컨텍스트 모델을 실행하기 위한 컨텍스트
 
 ### API 호환성
 
-OpenAI 및 Anthropic API를 그대로 대체합니다. 스트리밍 사용량 통계 (`stream_options.include_usage`), Anthropic adaptive thinking, 비전 입력 (base64, URL)을 지원합니다.
+OpenAI 및 Anthropic API를 그대로 대체합니다. 스트리밍 사용량 통계 (`stream_options.include_usage`), llama.cpp 방식 prefill 진행률 (`return_progress`), Anthropic adaptive thinking, 비전 입력 (base64, URL)을 지원합니다.
 
 | 엔드포인트 | 설명 |
 |----------|------|
@@ -254,7 +243,11 @@ OpenAI 및 Anthropic API를 그대로 대체합니다. 스트리밍 사용량 �
 | `POST /v1/messages` | Anthropic Messages API |
 | `POST /v1/embeddings` | 텍스트 임베딩 |
 | `POST /v1/rerank` | 문서 리랭킹 |
+| `POST /v1/systemone` | Decision 모델 또는 채팅 모델의 타입별 판단 (TypeSafe System One) |
 | `GET /v1/models` | 사용 가능한 모델 목록 |
+| `POST /tokenize`, `POST /detokenize` | vLLM 호환 토크나이저 API (`/v1` 경로도 지원) |
+
+설정, 모델, 다운로드, 양자화, 벤치마크를 다루는 관리자 API는 메인 API 키를 Bearer 토큰으로 받으며 headless 모드에서도 동작합니다. [Admin API](docs/admin-api.md)를 참고하세요.
 
 ### Tool calling & 구조화된 출력
 
@@ -293,13 +286,14 @@ mlx-lm에서 사용 가능한 모든 함수 호출 형식, JSON 스키마 검증
 | LLM | [mlx-lm](https://github.com/ml-explore/mlx-lm)이 지원하는 모든 모델 |
 | VLM | Qwen3.5 시리즈, GLM-4V, Pixtral 및 기타 [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) 모델 |
 | OCR | DeepSeek-OCR, DOTS-OCR, GLM-OCR |
-| 임베딩 | BERT, BGE-M3, ModernBERT |
+| 임베딩 | BERT, BGE-M3, ModernBERT, EmbeddingGemma 2 |
 | 리랭커 | ModernBERT, XLM-RoBERTa |
+| Decision | Clef, Clef-Flash, OpenJev, Decision 3.0 (d3, d3-flash, d3-mini, d3-nano, d3-lite, d3-edge) |
 
 ## CLI 설정
 
 ```bash
-# 관리형 백그라운드 서버 (macOS 앱 또는 Homebrew 설치)
+# 관리형 백그라운드 서버 (Homebrew 설치)
 omlx start
 omlx stop
 omlx restart
@@ -331,6 +325,9 @@ omlx restart
 # API 키 인증
 .venv/bin/omlx serve --model-dir ~/models --api-key your-secret-key
 # Localhost 전용: 관리자 패널 전체 설정에서 검증 건너뛰기
+
+# 웹 UI 없이 추론·관리자 API만 실행 (설정에 저장되지 않음)
+omlx serve --model-dir ~/models --headless
 ```
 
 모든 설정은 `/admin`의 웹 관리자 패널에서도 설정할 수 있습니다. 설정은 `~/.omlx/settings.json`에 저장되며, CLI 플래그가 우선합니다.
@@ -345,7 +342,8 @@ FastAPI Server (OpenAI / Anthropic API)
     │   ├── BatchedEngine (LLM, 연속 배칭)
     │   ├── VLMEngine (비전-언어 모델)
     │   ├── EmbeddingEngine
-    │   └── RerankerEngine
+    │   ├── RerankerEngine
+    │   └── DecisionEngine
     │
     ├── ProcessMemoryEnforcer (전체 메모리 제한, TTL 체크)
     │
@@ -362,12 +360,25 @@ FastAPI Server (OpenAI / Anthropic API)
 
 ## 개발
 
+### 빌드 명령
+
+| 명령 | 하는 일 |
+|---|---|
+| `make install` | 서버와 웹 UI를 editable 모드로 설치한 뒤 네이티브 커스텀 커널까지 빌드 |
+| `make install-no-kernels` | 커널 없이 같은 설치 (전체 Xcode가 없는 환경용) |
+| `make mcp` | MCP (Model Context Protocol) 지원 추가 |
+| `make dev` | `make install`과 같고 개발 도구 포함 (`make dev-no-kernels`는 커널 제외) |
+| `make kernels` | 기존 네이티브 커스텀 커널 빌드를 지우고 다시 컴파일한 뒤 모두 로드되는지 확인 |
+| `make web` | 웹 UI CSS를 다시 빌드하고 번역 파일을 정규화 |
+
+네이티브 커스텀 커널 빌드에는 Metal 툴체인이 포함된 전체 Xcode가 필요합니다(`xcodebuild -downloadComponent MetalToolchain`).
+
 ### CLI 서버
 
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
+uv sync --locked --extra vision --extra embeddings --extra documents --extra web-search --extra cluster
 uv run --no-sync pytest -m "not slow and not integration"
 ```
 
@@ -391,5 +402,5 @@ uv run --no-sync pytest -m "not slow and not integration"
 - [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) - Apple Silicon을 위한 임베딩 모델 지원
 - [dflash-mlx](https://github.com/bstnxbt/dflash-mlx) - Apple Silicon에서의 블록 디퓨전 speculative decoding
 - [MTPLX](https://github.com/youssofal/mtplx) - Lightning MTP의 verify-shape Metal 커널은 Youssof Altoukhi의 MTPLX를 기반으로 하며, depth-k 파이프라인도 여기서 영감을 받았습니다
-- [mlx-serve](https://github.com/ddalcu/mlx-serve) - fused GDN verify prework 커널은 mlx-serve가 포팅한 mlxfast-challenge의 qwen35_packed_gdn_prework 커널을 바탕으로 수정되었습니다
+- [mlx-serve](https://github.com/ddalcu/mlx-serve) - fused GDN verify prework 커널은 mlx-serve가 포팅한 mlxfast-challenge의 qwen35_packed_gdn_prework 커널을 바탕으로 수정되었고, Qwen4의 fused GDN decode·prefill 커널은 mlx-serve의 MIT 라이선스 `transformer.zig`를 바탕으로 수정되었습니다
 - [SiliconScope](https://github.com/kennss/SiliconScope) - 메뉴 바 통계의 디자인과 렌더링 방식은 Kennt Kim의 SiliconScope에서 가져왔으며, 에너지 효율적인 리렌더 게이팅도 여기서 영감을 받았습니다

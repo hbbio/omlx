@@ -11,6 +11,14 @@ from collections import defaultdict
 import mlx.core as mx
 from mlx_lm.models.cache import ArraysCache, BatchKVCache, CacheList
 
+# Text-only distributed ranks can run without mlx-vlm installed.
+try:
+    from mlx_vlm.models import cache as vlm_cache
+    from mlx_vlm.speculative.cache_state import SpeculativeCacheTransaction
+except ImportError:
+    vlm_cache = None
+    SpeculativeCacheTransaction = ()
+
 from . import batch_generator as bg
 from . import batched_head
 
@@ -18,10 +26,17 @@ logger = logging.getLogger(__name__)
 
 
 def _supports_batch_rollback(cache):
-    if type(cache) is CacheList:
+    if type(cache) is CacheList or (
+        vlm_cache is not None and type(cache) is vlm_cache.CacheList
+    ):
         return all(_supports_batch_rollback(part) for part in cache.caches)
-    return type(cache) in (ArraysCache, BatchKVCache) or getattr(
-        type(cache), "_omlx_mtp_batch_rollback_cache", False
+    return (
+        type(cache) in (ArraysCache, BatchKVCache)
+        or (
+            vlm_cache is not None
+            and type(cache) in (vlm_cache.ArraysCache, vlm_cache.BatchKVCache)
+        )
+        or getattr(type(cache), "_omlx_mtp_batch_rollback_cache", False)
     )
 
 
@@ -110,10 +125,15 @@ def advance(batch, batch_state):
 
 def _advance_group(batch, depth, rows, replacements, *, cache=None):
     batch_state = getattr(batch, "_omlx_mtp_batch_state", None)
-    use_head_batch = cache is not None and batched_head.eligible(batch, rows)
+    drafter = bg._drafter_for(batch.model)
+    use_head_batch = (
+        drafter is None and cache is not None and batched_head.eligible(batch, rows)
+    )
     if not use_head_batch:
         batched_head.flush(batch_state)
-    draft_jobs = [] if use_head_batch else None
+    # A block drafter drafts every row after the shared commit, like the
+    # batched head, so its jobs are collected the same way.
+    draft_jobs = [] if use_head_batch or drafter is not None else None
     if len(rows) == 1:
         index, row, state = rows[0]
         bg._set_singleton_mrope_delta(row)
@@ -132,7 +152,13 @@ def _advance_group(batch, depth, rows, replacements, *, cache=None):
     )
     logger.debug("Lightning MTP shared verify: rows=%d depth=%d", len(rows), depth)
     started = time.perf_counter()
-    logits, hidden, gdn = bg._call_backbone(batch.model, inputs, cache, n_confirmed=1)
+    logits, hidden, gdn, captured = bg._call_backbone_captured(
+        batch.model,
+        inputs,
+        cache,
+        n_confirmed=1,
+        capture_layer_ids=bg._drafter_capture_ids(batch.model),
+    )
     greedy_results = None
     stochastic_results = None
     if depth > 0 and all(
@@ -140,7 +166,7 @@ def _advance_group(batch, depth, rows, replacements, *, cache=None):
     ):
         # Resolve all acceptance counts and token IDs in one host transfer.
         # Stateful processors and stochastic samplers retain their row path.
-        targets = mx.argmax(logits, axis=-1).astype(mx.int32)
+        targets = bg._greedy_targets(bg._logprobs(logits))
         drafts = inputs[:, 1:].astype(mx.int32)
         matches = (targets[:, :-1] == drafts).astype(mx.int32)
         accepted = mx.cumprod(matches, axis=1).sum(axis=1, keepdims=True)
@@ -162,10 +188,9 @@ def _advance_group(batch, depth, rows, replacements, *, cache=None):
     else:
         mx.eval(logits, hidden)
     verify_ms = (time.perf_counter() - started) * 1000 / len(rows)
-    vector_rollback = (
+    vector_rollback = isinstance(gdn, SpeculativeCacheTransaction) or (
         whole_batch
         and gdn is not None
-        and not getattr(batch.model, "_omlx_mtp_commit_align", 0)
         and all(_supports_batch_rollback(layer) for layer in cache)
         and any(
             getattr(host, "_omlx_mtp_batch_rollback", False)
@@ -198,9 +223,16 @@ def _advance_group(batch, depth, rows, replacements, *, cache=None):
                 logits[row_index : row_index + 1],
                 hidden[row_index : row_index + 1],
                 None,
+                bg._slice_captured(captured, row_index),
             ),
             commit_cache=(
-                (lambda accepted: cache)
+                (
+                    lambda accepted, i=row_index, s=state: (
+                        cache
+                        if whole_batch and not s.boundary_emit_pending
+                        else [c.extract(i) for c in cache]
+                    )
+                )
                 if vector_rollback
                 else (lambda accepted, i=row_index: commit(accepted, i))
             ),
@@ -225,11 +257,19 @@ def _advance_group(batch, depth, rows, replacements, *, cache=None):
             cache, gdn, [accepted for accepted, _ in deferred], depth + 1
         )
         commit_ms = (time.perf_counter() - started) * 1000 / len(rows)
-        for (_, row, _), (_, finish) in zip(rows, deferred):
+        for (index, row, _), (_, finish) in zip(rows, deferred):
             bg._set_singleton_mrope_delta(row)
             finish(commit_ms)
-        batch.prompt_cache = cache
+            # Boundary forwards advance private row caches that must be merged back.
+            if not whole_batch or row.prompt_cache is not cache:
+                replacements[index] = row.prompt_cache
+                batch._token_context[index] = row._token_context[0]
+        if whole_batch:
+            batch.prompt_cache = cache
     if draft_jobs is not None:
-        batched_head.draft(batch, draft_jobs)
+        if drafter is not None:
+            drafter.draft(draft_jobs)
+        else:
+            batched_head.draft(batch, draft_jobs)
     bg._clear_rollback(cache)
-    return vector_rollback
+    return vector_rollback and whole_batch and not replacements

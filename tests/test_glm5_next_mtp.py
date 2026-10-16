@@ -4,8 +4,8 @@
 Covers nextn key matching, MTP block structure, the cache pair the head
 needs, and two sanitize paths: a raw checkpoint whose head lives at
 ``layers.<num_hidden_layers>.*``, and a checkpoint this patch already
-converted whose head is named ``mtp.*``. No weights are loaded; the config
-is shrunk so the routed MoE never allocates.
+converted whose head is named ``mtp.*``. No model checkpoint is loaded.
+Checkpoint-key tests keep the 45-layer layout; execution tests use eight layers.
 """
 
 from __future__ import annotations
@@ -24,16 +24,26 @@ if not apply_mlx_vlm_glm5_next_compat_patch():
     pytest.importorskip("mlx_vlm.models.glm5_next")
 
 import copy
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 from mlx.utils import tree_flatten
+from mlx_vlm.models.cache import ArraysCache
 from mlx_vlm.models.glm5_next import language
+from mlx_vlm.speculative.drafters.dflash2.config import DFlash2Config
+from mlx_vlm.speculative.drafters.dflash2.dflash2 import DFlash2DraftModel
 
+from omlx.patches import mlx_lm_mtp
 from omlx.patches.mlx_lm_mtp import batch_generator as bg
 from omlx.patches.mlx_lm_mtp import batched_head
 from omlx.patches.mlx_lm_mtp import prompt_priming as pp
+from omlx.patches.mlx_vlm_glm5_next_compat import decode_kernels as dk
 from omlx.patches.mlx_vlm_mtp import glm5_next_vlm_runtime  # noqa: E402
 from omlx.patches.mlx_vlm_mtp.glm5_next_batch_rollback import rollback_rows
+from omlx.speculative import dflash as dd
 
 N_MAIN = 45
 N_MTP = 1
@@ -652,6 +662,12 @@ def test_verify_compiled_ffn_matches_eager(applied, config, layer_idx, width):
     mx.eval(expected)
 
     layer.compile_ffn = True
+    if width > 1:
+        # Each verify shape runs eagerly once to prime kernel self-checks.
+        primed = layer(x, gdn_sink=[])
+        mx.eval(primed)
+        assert layer._ffn_c is None
+        assert mx.array_equal(primed, expected).item()
     compiled_sink = []
     actual = layer(x, gdn_sink=compiled_sink)
     mx.eval(actual)
@@ -709,14 +725,15 @@ def assert_row_states(actual, expected, size):
                         assert ac._processed == bc._processed
 
 
-def make_host(dtype):
+def make_host(dtype=mx.float32, *, mtp_layers=0, **overrides):
     assert glm5_next_vlm_runtime.apply()
     from mlx_vlm.models.glm5_next import language
     from mlx_vlm.models.glm5_next.config import TextConfig
 
     values = copy.deepcopy(TINY_TEXT_CONFIG)
+    values.update(overrides)
     values["num_hidden_layers"] = 8
-    values["num_nextn_predict_layers"] = 0
+    values["num_nextn_predict_layers"] = mtp_layers
     values["layer_types"] = values["layer_types"][:8]
     values["mlp_layer_types"] = values["mlp_layer_types"][:8]
     values["linear_attn_config"]["kda_layers"] = [0, 1, 2, 4, 5, 6]
@@ -726,8 +743,8 @@ def make_host(dtype):
     return host
 
 
-@pytest.mark.parametrize("size", [2, 3, 4])
-@pytest.mark.parametrize("depth", [1, 2, 3, 7])
+@pytest.mark.parametrize("size", [2, 4])
+@pytest.mark.parametrize("depth", [1, 3, 7])
 @pytest.mark.parametrize("dtype", [mx.float32, mx.bfloat16])
 def test_vector_restore_and_continuation_match_scalar(size, depth, dtype):
     mx.random.seed(349)
@@ -772,10 +789,54 @@ def test_vector_restore_and_continuation_match_scalar(size, depth, dtype):
         assert_row_states(cache, expected, size)
 
 
+@pytest.mark.skipif(
+    not language.nax_sparse_mla_available(), reason="split-K decode needs NAX"
+)
+@pytest.mark.parametrize("lengths", [[2051, 2057], [2057]])
+def test_split_k_batched_decode_matches_rows_alone(monkeypatch, lengths):
+    mx.random.seed(4242)
+    # Selection past index_topk, with shapes the split-K kernels accept.
+    host = make_host(
+        mx.bfloat16,
+        index_topk=2048,
+        index_n_heads=32,
+        index_head_dim=128,
+        num_attention_heads=16,
+        num_key_value_heads=16,
+        kv_lora_rank=128,
+    )
+    rows = []
+    for n in lengths:
+        cache = host.make_cache()
+        tokens = mx.random.randint(0, 512, (1, n)).astype(mx.uint32)
+        mx.eval(host(tokens, cache=cache).logits)
+        rows.append(cache)
+    cache = bg._merge_row_caches([copy.deepcopy(r) for r in rows])
+    calls = []
+    kernel = language.sparse_mla_decode_batched
+    monkeypatch.setattr(
+        language,
+        "sparse_mla_decode_batched",
+        lambda *a, **k: calls.append(1) or kernel(*a, **k),
+    )
+    widths = [1, 1, 3, 1, 4, 1]
+    for step, width in enumerate(widths):
+        tokens = mx.random.randint(0, 512, (len(lengths), width)).astype(mx.uint32)
+        batched = host(tokens, cache=cache).logits
+        singles = [host(tokens[r : r + 1], cache=c).logits for r, c in enumerate(rows)]
+        mx.eval(batched, singles)
+        for r, single in enumerate(singles):
+            assert mx.allclose(
+                batched[r : r + 1], single, atol=3e-4, rtol=3e-4
+            ).item(), (step, r)
+    # Both sparse layers of every step ran the batched kernel.
+    assert len(calls) == 2 * len(widths)
+
+
 @pytest.mark.parametrize("size", [2, 3, 4])
 @pytest.mark.parametrize("dtype", [mx.float32, mx.bfloat16])
 def test_masked_replay_restores_metadata(size, dtype):
-    from mlx_lm.models.cache import ArraysCache
+    from mlx_vlm.models.cache import ArraysCache
     from mlx_vlm.models.glm5_next import language
 
     mx.random.seed(884)
@@ -819,7 +880,8 @@ def test_masked_replay_restores_metadata(size, dtype):
 
 
 def test_invalid_vector_does_not_mutate_any_cache():
-    from mlx_lm.models.cache import ArraysCache, CacheList, BatchKVCache
+    from mlx_vlm.models.cache import ArraysCache, BatchKVCache, CacheList
+
     from omlx.patches.deepseek_v4.cache_extras import BatchPoolingCache
 
     cache = ArraysCache(2)
@@ -964,8 +1026,11 @@ def test_history_and_clone_match_independent_heads(size, stochastic, quantized):
             for layer, reference in zip(owner.head.cache, ref.mtp_cache):
                 actual = layer.extract(index)
                 assert actual.offset == reference.offset
-                actual_state = dict(tree_flatten(actual.state))
-                reference_state = dict(tree_flatten(reference.state))
+                from omlx.cache.type_registry import CacheTypeRegistry
+
+                handler = CacheTypeRegistry.get_handler_for_object(actual)
+                actual_state = dict(tree_flatten(handler.serialize_state(actual)))
+                reference_state = dict(tree_flatten(handler.serialize_state(reference)))
                 for key, value in actual_state.items():
                     expected = reference_state[key]
                     if isinstance(value, mx.array):
@@ -1033,3 +1098,840 @@ def test_deferred_glm_head_continuation(chunk, history_length):
         expected = host.mtp_forward(*args, reference)
         mx.eval(actual, expected)
         assert mx.allclose(actual, expected, atol=3e-4, rtol=3e-4).item()
+
+
+# ---------------------------------------------------------------------------
+# Lightning MTP verify on the fused decode/verify kernels
+
+
+VOCAB = 256
+# (bits of q/k/f_a/g_a/b/f_b/g_b, bits of v_proj) per KDA layer: 8-bit gate
+# rows replay in the kernel (qmv_quad); 5-bit ones run outside it for verify
+# blocks (a_pre/gate_pre, replayed from the capture); a 5-bit v_proj among
+# 8-bit projections takes the grouped input projection (GLM-5.3 layer 40).
+KDA_BITS = {
+    "8-bit/5-bit": ((8, 8), (5, 5)),
+    "mixed-v/4-bit": ((8, 5), (4, 4)),
+}
+
+
+def _runtime():
+    apply_mlx_vlm_glm5_next_compat_patch()
+    from omlx.patches.mlx_vlm_mtp import glm5_next_vlm_runtime as rt
+
+    assert rt.apply()
+    from mlx_vlm.models.glm5_next import language
+
+    return rt, language
+
+
+def _rand_affine(out_dims, in_dims, bits, group_size=64, scale=0.004):
+    words = in_dims * bits // 32
+    w = mx.random.randint(0, 2**31 - 1, (out_dims, words)).astype(mx.uint32)
+    w = w * 2 + mx.random.randint(0, 2, w.shape).astype(mx.uint32)
+    groups = in_dims // group_size
+    s = (mx.random.uniform(0.5, 1.5, (out_dims, groups)) * scale).astype(mx.bfloat16)
+    b = (
+        -mx.random.uniform(0.5, 1.5, (out_dims, groups)) * scale * 2**bits / 2
+    ).astype(mx.bfloat16)
+    return w, s, b
+
+
+def _quantized_linear(out_dims, in_dims, bits):
+    layer = nn.QuantizedLinear(64, 64, bias=False, group_size=64, bits=bits)
+    layer.weight, layer.scales, layer.biases = _rand_affine(out_dims, in_dims, bits)
+    return layer
+
+
+def _model(seed, kda_bits, heads=16):
+    """A small quantized GLM-5.3 with one MTP layer whose shapes engage every
+    fused decode/verify path (KDA: 8 heads of 128)."""
+    from mlx_vlm.models import glm5_next
+
+    from omlx.patches.deepseek_v4.switch_layers import SwitchLinear
+
+    from omlx.patches.mlx_vlm_mtp import is_mtp_attach_enabled, set_mtp_attach_enabled
+
+    _, language = _runtime()
+    text = glm5_next.TextConfig(
+        model_type="glm5_next_text",
+        vocab_size=VOCAB,
+        hidden_size=1024,
+        intermediate_size=2048,
+        moe_intermediate_size=512,
+        num_hidden_layers=4,
+        num_attention_heads=heads,
+        num_key_value_heads=heads,
+        n_shared_experts=1,
+        n_routed_experts=128,
+        routed_scaling_factor=2.5,
+        kv_lora_rank=512,
+        q_lora_rank=256,
+        qk_rope_head_dim=0,
+        v_head_dim=64,
+        qk_nope_head_dim=64,
+        num_experts_per_tok=8,
+        first_k_dense_replace=1,
+        max_position_embeddings=8192,
+        rms_norm_eps=1e-5,
+        index_topk=2048,
+        index_head_dim=128,
+        index_n_heads=32,
+        layer_types=[
+            "linear_attention",
+            "deepseek_sparse_attention",
+            "linear_attention",
+            "deepseek_sparse_attention",
+        ],
+        mlp_layer_types=["dense", "sparse", "sparse", "sparse"],
+        linear_attn_config={
+            "num_heads": 8,
+            "head_dim": 128,
+            "short_conv_kernel_size": 4,
+            "gate_lower_bound": -5.0,
+        },
+        index_kpool=4,
+        hc_mult=4,
+        hc_sinkhorn_iters=20,
+        num_nextn_predict_layers=1,
+    )
+    mx.random.seed(seed)
+    attach = is_mtp_attach_enabled()
+    set_mtp_attach_enabled(True)
+    try:
+        model = language.LanguageModel(text)
+    finally:
+        set_mtp_attach_enabled(attach)
+    assert hasattr(model, "mtp")
+    nn.quantize(
+        model,
+        group_size=64,
+        bits=4,
+        class_predicate=lambda _, m: isinstance(m, (nn.Linear, SwitchLinear)),
+    )
+    params = []
+    for name, value in nn.utils.tree_flatten(model.parameters()):
+        if value.dtype == mx.uint32:
+            continue
+        if language.glm5_next_cast_predicate(name):
+            value = (mx.random.normal(value.shape) * 0.05).astype(mx.bfloat16)
+            if name.endswith("scales"):
+                value = mx.abs(value) * 0.1 + 0.002
+            if "norm" in name and name.endswith("weight"):
+                value = (1.0 + value).astype(mx.bfloat16)
+        else:
+            value = mx.random.normal(value.shape) * 0.05
+            if name.endswith("hc.scale") or name.endswith("hc.base"):
+                value = value * 10
+        params.append((name, value))
+    model.load_weights(params, strict=False)
+    kda_layers = [layer.self_attn for layer in model.model.layers if layer.is_linear]
+    for attn, (bits, v_bits) in zip(kda_layers, kda_bits):
+        qkv, hidden = attn.qkv_dim, attn.hidden_size
+        for name, (out_dims, in_dims) in {
+            "q_proj": (qkv, hidden),
+            "k_proj": (qkv, hidden),
+            "v_proj": (qkv, hidden),
+            "g_a_proj": (128, hidden),
+            "b_proj": (attn.num_heads, hidden),
+            "g_b_proj": (qkv, 128),
+        }.items():
+            setattr(
+                attn,
+                name,
+                _quantized_linear(
+                    out_dims, in_dims, v_bits if name == "v_proj" else bits
+                ),
+            )
+        attn.forget_gate.f_a_proj = _quantized_linear(128, hidden, bits)
+        attn.forget_gate.f_b_proj = _quantized_linear(qkv, 128, bits)
+    model.eval()
+    mx.eval(model.parameters())
+    return model
+
+
+def _bitwise_equal(a: mx.array, b: mx.array) -> bool:
+    if a.shape != b.shape or a.dtype != b.dtype:
+        return False
+    view = {mx.bfloat16: mx.uint16, mx.float16: mx.uint16, mx.float32: mx.uint32}.get(
+        a.dtype
+    )
+    if view is not None:
+        a, b = a.view(view), b.view(view)
+    return bool(mx.array_equal(a, b).item())
+
+
+def _cache_items(cache):
+    """Every array and position scalar that defines a model cache's state."""
+    items = []
+    for i, layer in enumerate(cache):
+        subs = getattr(layer, "caches", None) or [layer]
+        for j, c in enumerate(subs):
+            state = c.state
+            for k, value in enumerate(
+                state if isinstance(state, (list, tuple)) else [state]
+            ):
+                items.append(((i, j, k), value))
+            for attr in (
+                "offset",
+                "remainder",
+                "_processed",
+                "lengths",
+                "left_padding",
+            ):
+                items.append(((i, j, attr), getattr(c, attr, None)))
+    return items
+
+
+def _assert_items_equal(left, right, where):
+    assert [k for k, _ in left] == [k for k, _ in right], where
+    mx.eval([v for _, v in left + right if isinstance(v, mx.array)])
+    for (key, a), (_, b) in zip(left, right):
+        if isinstance(a, mx.array) or isinstance(b, mx.array):
+            assert isinstance(a, mx.array) and isinstance(b, mx.array), (where, key)
+            assert _bitwise_equal(a, b), (where, key)
+        else:
+            assert a == b, (where, key, a, b)
+
+
+def _assert_caches_equal(fused, reference, where):
+    _assert_items_equal(_cache_items(fused), _cache_items(reference), where)
+
+
+def check_verify_matches_reference(
+    seed, prompt_len, cycles, kda_bits, head_steps=2, armed=False
+):
+    """Fused vs reference MTP verify cycles on two identical models.
+
+    ``cycles`` lists ``(width, accepted)``: a verify block of ``width`` tokens
+    (1 + depth), then the rollback keeping ``accepted`` drafts. ``armed``
+    arms the verify-shape qmm routing around both verify forwards, as the
+    batch generator does in production. Returns the fused kernel families
+    used by the fused model's verify forwards.
+    """
+    from collections import Counter
+
+    from omlx.patches import qwen35_verify_qmm as verify_qmm
+    from omlx.patches.mlx_lm_mtp import cache_rollback
+
+    if armed:
+        assert verify_qmm.apply_verify_qmm_patch()
+    rt, language = _runtime()
+    fused_model = _model(seed, kda_bits)
+    reference_model = _model(seed, kda_bits)
+    prompt = mx.random.randint(0, VOCAB, (1, prompt_len)).astype(mx.int32)
+    caches = []
+    for model in (fused_model, reference_model):
+        cache = model.make_cache()
+        for start in range(0, prompt_len, 512):
+            logits = model(prompt[:, start : start + 512], cache=cache).logits
+            mx.eval(logits)
+        caches.append(cache)
+    fused_cache, reference_cache = caches
+    head_caches = [fused_model.make_mtp_cache(), reference_model.make_mtp_cache()]
+    next_ids = mx.argmax(logits[:, -1:], axis=-1).astype(mx.int32)
+    used = Counter()
+    saved = language._DECODE_FUSION
+    try:
+        for step, (width, accepted) in enumerate(cycles):
+            where = f"seed {seed} ctx {prompt_len} step {step} width {width} accept {accepted}"
+            block = mx.concatenate(
+                [next_ids, (next_ids * 7 + mx.arange(1, width)[None]) % VOCAB], axis=1
+            )[:, :width]
+            outs = []
+            for model, cache, fused in (
+                (fused_model, fused_cache, True),
+                (reference_model, reference_cache, False),
+            ):
+                language._DECODE_FUSION = fused
+                before = Counter(dk.STATS)
+                cache_rollback.set_undo_armed(True)
+                verify_qmm.set_verify_qmm_armed(armed)
+                try:
+                    out = model(block, cache=cache, return_hidden=True)
+                finally:
+                    verify_qmm.set_verify_qmm_armed(False)
+                    cache_rollback.set_undo_armed(False)
+                mx.eval(out.logits, out.hidden_states)
+                if fused:
+                    used += Counter(dk.STATS) - before
+                outs.append(out)
+            language._DECODE_FUSION = saved
+            fused_out, reference_out = outs
+            kda = [l.self_attn for l in fused_model.model.layers if l.is_linear]
+            for attn, entry in zip(kda, fused_out.gdn_states):
+                # Under armed routes a layer with separately quantized
+                # projections keeps the reference body for multi-row blocks.
+                reference_body = armed and width >= 2 and not attn._fused_ready
+                assert isinstance(
+                    entry, tuple if reference_body else language.KdaStepCapture
+                )
+            assert all(isinstance(e, tuple) for e in reference_out.gdn_states)
+            assert mx.all(mx.isfinite(reference_out.logits)).item(), where
+            assert _bitwise_equal(fused_out.logits, reference_out.logits), where
+            assert _bitwise_equal(
+                fused_out.hidden_states[-1], reference_out.hidden_states[-1]
+            ), where
+
+            kept = []
+            for model, cache, out in (
+                (fused_model, fused_cache, fused_out),
+                (reference_model, reference_cache, reference_out),
+            ):
+                m = model.mtp_clamp_accept(cache, accepted, width - 1)
+                model.rollback_speculative_cache(cache, out.gdn_states, m, width)
+                kept.append(m)
+            assert kept[0] == kept[1], where
+            _assert_caches_equal(fused_cache, reference_cache, where)
+
+            # MTP head: fold the committed rows, then chain drafts; fused
+            # kernels against the reference ops (identical inputs).
+            m = kept[0]
+            correction = mx.argmax(reference_out.logits[:, m : m + 1], axis=-1).astype(
+                mx.int32
+            )
+            committed = mx.concatenate([block[:, 1 : m + 1], correction], axis=1)
+            hidden = reference_out.hidden_states[-1][:, : m + 1]
+            heads = []
+            for model, head_cache, fusion in (
+                (fused_model, head_caches[0], True),
+                (reference_model, head_caches[1], False),
+            ):
+                language._DECODE_FUSION = fusion
+                results = []
+                logits, h = model.mtp_forward(
+                    hidden, committed, head_cache, return_hidden=True, logits_keep=1
+                )
+                results += [logits, h]
+                for _ in range(head_steps):
+                    tok = mx.argmax(logits[:, -1:], axis=-1).astype(mx.int32)
+                    logits, h = model.mtp_forward(
+                        h[:, -1:], tok, head_cache, return_hidden=True
+                    )
+                    results += [logits, h]
+                mx.eval(results)
+                heads.append(results)
+            language._DECODE_FUSION = saved
+            for i, (a, b) in enumerate(zip(*heads)):
+                assert _bitwise_equal(a, b), (where, "mtp head", i)
+            next_ids = correction
+    finally:
+        language._DECODE_FUSION = saved
+    # A plain decode step on the rolled-back caches (fused vs reference ops).
+    x = fused_model(next_ids, cache=fused_cache).logits
+    language._DECODE_FUSION = False
+    try:
+        y = reference_model(next_ids, cache=reference_cache).logits
+    finally:
+        language._DECODE_FUSION = saved
+    mx.eval(x, y)
+    assert _bitwise_equal(x, y), f"seed {seed} ctx {prompt_len} plain decode"
+    return {k for k, v in used.items() if v}
+
+
+# Every (width, accept) pair of depths 1..3 plus deeper and one-token blocks.
+_CYCLES = [
+    (2, 0),
+    (2, 1),
+    (3, 0),
+    (3, 1),
+    (3, 2),
+    (4, 3),
+    (4, 0),
+    (4, 2),
+    (4, 1),
+    (1, 0),
+    (8, 7),
+    (8, 2),
+    (8, 0),
+    (5, 4),
+    (2, 1),
+    (6, 3),
+    (7, 6),
+    (7, 0),
+]
+
+
+def _native_indexer_available() -> bool:
+    try:
+        from omlx.custom_kernels.glm_moe_dsa import fast
+
+        return bool(
+            fast.has_symbol("dsa_indexer_scores")
+            and fast.has_symbol("dsa_topk_indices")
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+@pytest.mark.parametrize("kda", sorted(KDA_BITS))
+@pytest.mark.parametrize("seed", [3, 17])
+def test_fused_verify_cycles_are_bitwise_reference(seed, kda):
+    used = check_verify_matches_reference(seed, 300, _CYCLES, KDA_BITS[kda])
+    assert {"kda", "hc_mix"} <= used, used
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+@pytest.mark.parametrize("split_k", [False, True])
+def test_fused_verify_cycles_with_sparse_selection_are_bitwise_reference(
+    monkeypatch, split_k
+):
+    """Past index_topk the sparse layers select (indexer + pooling undo).
+
+    With split_k both models run the split-K decode attention, so the fused
+    and reference forwards still match bit for bit."""
+    if not _native_indexer_available():
+        pytest.skip("GLM DSA native indexer extension is not built")
+    if split_k and not language.nax_sparse_mla_available():
+        pytest.skip("split-K decode needs NAX")
+    monkeypatch.setattr(language, "_SMALL_QUERY_INDEXER", split_k)
+    calls = []
+    kernel = language.sparse_mla_decode
+    monkeypatch.setattr(
+        language,
+        "sparse_mla_decode",
+        lambda *a, **k: calls.append(1) or kernel(*a, **k),
+    )
+    used = check_verify_matches_reference(
+        29, 2101, _CYCLES[:10], KDA_BITS["8-bit/5-bit"]
+    )
+    assert {"kda", "hc_mix"} <= used, used
+    assert bool(calls) == split_k
+    assert ("dsa_topk" in used) != split_k, used
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_fused_verify_cycles_under_armed_verify_qmm_routing_are_bitwise_reference():
+    """The batch generator arms the verify-shape qmm routes around every MTP
+    verify forward. A KDA layer whose projections do not share one
+    quantization (a 5-bit v_proj among 8-bit ones) runs them as separate
+    QuantizedLinear calls in the reference body, which the routes take for
+    3+ rows; the fused verify path must give the same values there too.
+    Blocks whose shared-expert projections stay on the stock qmm (2-3 rows
+    here) keep the shared expert in the fused MoE kernel."""
+    used = check_verify_matches_reference(
+        23, 300, _CYCLES, KDA_BITS["mixed-v/4-bit"], armed=True
+    )
+    assert {"kda", "hc_mix", "moe_shared_wide"} <= used, used
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_fused_verify_cycles_are_bitwise_reference_with_nax_tf32():
+    """The production default runs fp32 GEMMs on NAX (TF32), where the
+    one-token HC expand also engages."""
+    here = Path(__file__).resolve().parent
+    code = (
+        "import sys; sys.path[:0] = [%r, %r]\n"
+        "import test_glm5_next_mtp as t\n"
+        "t.dk.moe_router = t._stock_verify_router(t.dk.moe_router)\n"
+        "from omlx.patches.mlx_vlm_glm5_next_compat import decode_kernels as dk\n"
+        "used = []\n"
+        "for seed, ctx in ((5, 300), (11, 2101)):\n"
+        "    for bits in t.KDA_BITS.values():\n"
+        "        used.append(sorted(\n"
+        "            t.check_verify_matches_reference(seed, ctx, t._CYCLES[:12], bits)))\n"
+        "used.append(sorted(t.check_verify_matches_reference(\n"
+        "    19, 300, t._CYCLES, t.KDA_BITS['mixed-v/4-bit'], armed=True)))\n"
+        "print(dk.nax_relaxed_fp32_matmul(), used)\n" % (str(here), str(here.parent))
+    )
+    env = dict(os.environ, MLX_ENABLE_TF32="1")
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=1200,
+    )
+    assert done.returncode == 0, done.stderr[-4000:]
+    nax_tf32, used = done.stdout.strip().splitlines()[-1].split(" ", 1)
+    for families in eval(used):
+        assert {"kda", "hc_mix"} <= set(families), families
+        if nax_tf32 == "True":
+            # One-token blocks run the fused HC expand.
+            assert "hc_expand" in families, families
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+@pytest.mark.parametrize("every", [1, 3])
+def test_verify_early_eval_only_schedules(every, monkeypatch):
+    """Verify blocks evaluate every few layers while the forward is still
+    being built; logits, hidden states and rolled-back caches are those of
+    the lazy forward."""
+    from omlx.patches.mlx_lm_mtp import cache_rollback
+
+    rt, language = _runtime()
+    model = _model(13, KDA_BITS["8-bit/5-bit"])
+    prompt = mx.random.randint(0, VOCAB, (1, 300)).astype(mx.int32)
+    caches = []
+    for _ in range(2):
+        cache = model.make_cache()
+        mx.eval(model(prompt, cache=cache).logits)
+        caches.append(cache)
+    calls = []
+    real_async_eval = mx.async_eval
+
+    def counting_async_eval(*args):
+        calls.append(len(args))
+        return real_async_eval(*args)
+
+    def verify(block, cache):
+        cache_rollback.set_undo_armed(True)
+        try:
+            out = model(block, cache=cache, return_hidden=True)
+        finally:
+            cache_rollback.set_undo_armed(False)
+        mx.eval(out.logits, out.hidden_states)
+        return out
+
+    widths = [2, 4, 8]
+    for step, width in enumerate(widths):
+        block = mx.random.randint(0, VOCAB, (1, width)).astype(mx.int32)
+        monkeypatch.setattr(language, "_DECODE_EVAL_EVERY", 0)
+        lazy = verify(block, caches[0])
+        monkeypatch.setattr(language, "_DECODE_EVAL_EVERY", every)
+        monkeypatch.setattr(mx, "async_eval", counting_async_eval)
+        early = verify(block, caches[1])
+        monkeypatch.setattr(mx, "async_eval", real_async_eval)
+        assert _bitwise_equal(early.logits, lazy.logits), step
+        assert _bitwise_equal(early.hidden_states[-1], lazy.hidden_states[-1]), step
+        for cache, out in ((caches[0], lazy), (caches[1], early)):
+            model.rollback_speculative_cache(cache, out.gdn_states, width // 2, width)
+        _assert_caches_equal(caches[1], caches[0], f"step {step}")
+    # 4 layers: evaluations after layers `every`, 2 * every, ... (not the last).
+    assert len(calls) == len(widths) * len(range(every, 4, every))
+
+
+def _generate(model, prompt, count, fused, use_mtp):
+    """Greedy tokens from mlx-lm's BatchGenerator with oMLX's MTP loop."""
+    from types import SimpleNamespace
+
+    from mlx_lm.generate import BatchGenerator
+
+    from omlx.models.vlm import VLMModelAdapter
+
+    _, language = _runtime()
+    saved = language._DECODE_FUSION
+    language._DECODE_FUSION = fused
+    model._omlx_mtp_decode_enabled = use_mtp
+    adapter = VLMModelAdapter(
+        SimpleNamespace(
+            config=SimpleNamespace(model_type="glm5_next"), language_model=model
+        )
+    )
+    generator = BatchGenerator(
+        adapter,
+        max_tokens=count,
+        prefill_step_size=512,
+        sampler=lambda lp: mx.argmax(lp, -1),
+    )
+    tokens = []
+    try:
+        generator.insert([prompt])
+        for _ in range(4 * count):
+            _, responses = generator.next()
+            tokens.extend(response.token for response in responses)
+            if len(tokens) >= count:
+                break
+    finally:
+        generator.close()
+        language._DECODE_FUSION = saved
+    return tokens[:count]
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+@pytest.mark.parametrize(
+    "seed,kda,depth", [(3, "8-bit/5-bit", 1), (17, "mixed-v/4-bit", 3)]
+)
+def test_mtp_generation_emits_the_reference_path_tokens(seed, kda, depth, monkeypatch):
+    """End to end through the MTP loop (verify, accept, rollback, head fold
+    and chain): the fused verify path emits the reference path's tokens."""
+    from mlx_vlm.models.cache import ArraysCache
+
+    from omlx.patches import mlx_lm_mtp
+    from omlx.patches.mlx_lm_mtp import batch_generator
+
+    _, language = _runtime()
+    assert batch_generator.apply()
+    # The engine's scheduler hands a single sequence's recurrent caches over
+    # unpadded (no SSM mask); a bare BatchGenerator merges them with a zero
+    # left padding whose all-true mask keeps the fused KDA step off. Same
+    # values either way; emulate the engine.
+    make_mask = ArraysCache.make_mask
+
+    def unpadded(self, n):
+        pad = self.left_padding
+        if (
+            pad is not None
+            and self.lengths is None
+            and pad.size == 1
+            and pad.item() <= 0
+        ):
+            return None
+        return make_mask(self, n)
+
+    monkeypatch.setattr(ArraysCache, "make_mask", unpadded)
+    monkeypatch.setattr(mlx_lm_mtp, "_MTP_ACTIVE", True)
+    mlx_lm_mtp_depth = mlx_lm_mtp.get_mtp_depth(), mlx_lm_mtp.is_mtp_depth_fixed()
+    mlx_lm_mtp.set_mtp_depth(depth, fixed=True)
+    try:
+        models = {name: _model(seed, KDA_BITS[kda]) for name in ("fused", "reference")}
+    finally:
+        mlx_lm_mtp.set_mtp_depth(*mlx_lm_mtp_depth)
+    prompt = [
+        int(v)
+        for v in mx.random.randint(0, VOCAB, (300,), key=mx.random.key(seed)).tolist()
+    ]
+    rollbacks = []
+    rollback = language.LanguageModel.rollback_speculative_cache
+
+    def counted(self, caches, gdn_states, accepted, block_size):
+        rollbacks.append((int(accepted), int(block_size)))
+        return rollback(self, caches, gdn_states, accepted, block_size)
+
+    monkeypatch.setattr(language.LanguageModel, "rollback_speculative_cache", counted)
+    before = dk.STATS["kda"]
+    fused = _generate(models["fused"], prompt, 20, True, True)
+    fused_kda = dk.STATS["kda"] - before
+    rollbacks_fused = list(rollbacks)
+    before = dk.STATS["kda"]
+    reference = _generate(models["reference"], prompt, 20, False, True)
+    reference_kda = dk.STATS["kda"] - before
+    assert fused == reference
+    assert any(b > 1 for _, b in rollbacks_fused), rollbacks_fused
+    assert rollbacks[len(rollbacks_fused) :] == rollbacks_fused
+    assert fused_kda > reference_kda, (fused_kda, reference_kda)
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_rollback_of_a_fused_block_replays_only_partial_accepts(monkeypatch):
+    """A fully kept block leaves the forward's own states in the cache; a
+    partial accept replays the kept rows through the fused kernel."""
+    rt, language = _runtime()
+    model = _model(7, KDA_BITS["8-bit/5-bit"])
+    cache = model.make_cache()
+    mx.eval(model(mx.array([[1, 2, 3, 4, 5]]), cache=cache).logits)
+    replays = []
+    original = language.KdaStepCapture.replay
+
+    def replay(self, n):
+        replays.append(n)
+        return original(self, n)
+
+    monkeypatch.setattr(language.KdaStepCapture, "replay", replay)
+    for accepted, expected in ((3, []), (1, [2, 2])):
+        from omlx.patches.mlx_lm_mtp import cache_rollback
+
+        cache_rollback.set_undo_armed(True)
+        try:
+            out = model(mx.array([[6, 7, 8, 9]]), cache=cache, return_hidden=True)
+        finally:
+            cache_rollback.set_undo_armed(False)
+        kda = [c for c in cache if not hasattr(c, "caches")]
+        final = [(c[0], c[1]) for c in kda]
+        replays.clear()
+        model.rollback_speculative_cache(cache, out.gdn_states, accepted, 4)
+        assert replays == expected
+        if not expected:
+            assert all(c[0] is a and c[1] is b for c, (a, b) in zip(kda, final))
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_fused_capture_refuses_a_mismatched_block_before_touching_caches():
+    """A capture whose width is not the verify block's is refused before
+    any layer (sparse ones included) is trimmed or rewritten."""
+    from omlx.patches.mlx_lm_mtp import cache_rollback
+
+    _runtime()
+    model = _model(9, KDA_BITS["8-bit/5-bit"])
+    cache = model.make_cache()
+    mx.eval(model(mx.array([[1, 2, 3, 4, 5]]), cache=cache).logits)
+    cache_rollback.set_undo_armed(True)
+    try:
+        out = model(mx.array([[6, 7, 8, 9]]), cache=cache, return_hidden=True)
+    finally:
+        cache_rollback.set_undo_armed(False)
+    mx.eval(out.logits)
+    before = _cache_items(cache)
+    with pytest.raises(RuntimeError, match="KDA capture"):
+        model.rollback_speculative_cache(cache, out.gdn_states, 0, 3)
+    _assert_items_equal(before, _cache_items(cache), "refused rollback")
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_batched_rollback_rejects_a_fused_capture():
+    _, language = _runtime()
+    from omlx.patches.mlx_vlm_mtp.glm5_next_batch_rollback import rollback_rows
+    from mlx_vlm.models.cache import ArraysCache
+
+    cache = ArraysCache(size=2)
+    cache[0], cache[1] = mx.zeros((2, 3, 8)), mx.zeros((2, 1, 1, 1))
+    capture = language.KdaStepCapture(None, mx.zeros((2, 4, 8)), None, None)
+    with pytest.raises(ValueError):
+        rollback_rows(language, [cache], [capture], [0, 1], 4)
+
+
+def _stock_verify_router(fused):
+    """Leave verify rows to the stock router.
+
+    Fused-vs-reference checks then compare the other kernels on the same
+    expert choices. The verify router has its own tests.
+    """
+
+    def router(x, *args, **kwargs):
+        return None if x.shape[0] > 1 else fused(x, *args, **kwargs)
+
+    return router
+
+
+@pytest.fixture(autouse=True)
+def _pin_verify_router(monkeypatch):
+    monkeypatch.setattr(dk, "moe_router", _stock_verify_router(dk.moe_router))
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_drafter_captures_are_layer_outputs_in_requested_order(monkeypatch):
+    """Prefill, verify and deferred one-token decode capture each requested
+    layer's HC-averaged output without changing logits."""
+    _, language = _runtime()
+    model = _model(3, KDA_BITS["8-bit/5-bit"])
+    wanted = [2, 0]
+    prompt = mx.random.randint(0, VOCAB, (1, 300), key=mx.random.key(3))
+    block = mx.array([[5, 6, 7, 8]])
+    step = mx.array([[9]])
+    observed = []
+
+    def run(capture):
+        cache = model.make_cache()
+        kwargs = {"capture_layer_ids": wanted} if capture else {}
+        prefill = model(prompt, cache=cache, **kwargs)
+        verify = model(block, cache=cache, return_hidden=True, **kwargs)
+        model.rollback_speculative_cache(cache, verify.gdn_states, 3, 4)
+        model._omlx_drafter = (
+            SimpleNamespace(
+                scope_uids=(7,),
+                target_layer_ids=wanted,
+                observe=lambda uids, caps: observed.append((uids, caps)),
+            )
+            if capture
+            else None
+        )
+        try:
+            decode = model(step, cache=cache)
+        finally:
+            model._omlx_drafter = None
+        mx.eval(prefill.logits, verify.logits, decode.logits)
+        return prefill, verify, decode
+
+    recorded = []
+    call = language.Glm5NextDecoderLayer.__call__
+
+    def record(self, x, *args, **kwargs):
+        out = call(self, x, *args, **kwargs)
+        full = out.materialize() if isinstance(out, language._HCDeferred) else out
+        recorded.append(full.mean(axis=2))
+        return out
+
+    monkeypatch.setattr(language.Glm5NextDecoderLayer, "__call__", record)
+    reference = run(capture=False)
+    monkeypatch.setattr(language.Glm5NextDecoderLayer, "__call__", call)
+    captured = run(capture=True)
+
+    layers = len(model.model.layers)
+    per_call = [recorded[i * layers : (i + 1) * layers] for i in range(3)]
+    for ref, got in zip(reference, captured):
+        assert _bitwise_equal(got.logits, ref.logits)
+    prefill, verify, _ = captured
+    assert len(prefill.hidden_states) == len(wanted)
+    for got, layer in zip(prefill.hidden_states, wanted):
+        assert _bitwise_equal(got, per_call[0][layer])
+    # Verify returns the captures, then the head's pre-norm hidden.
+    assert len(verify.hidden_states) == len(wanted) + 1
+    for got, layer in zip(verify.hidden_states, wanted):
+        assert _bitwise_equal(got, per_call[1][layer])
+    assert _bitwise_equal(verify.hidden_states[-1], reference[1].hidden_states[-1])
+    [(uids, caps)] = observed
+    assert uids == (7,)
+    assert [tuple(c.shape) for c in caps] == [(1, 1, 1024)] * len(wanted)
+    for got, layer in zip(caps, wanted):
+        assert _bitwise_equal(got, per_call[2][layer])
+
+
+def _glm_drafter(target, seed):
+    config = DFlash2Config.from_dict(
+        {
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 512,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "vocab_size": VOCAB,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 4096,
+            "num_target_layers": len(target.model.layers),
+            "sliding_window": 64,
+            "layer_types": ["sliding_attention"],
+            "rope_parameters": {"rope_theta": 10000.0, "rope_type": "default"},
+            "tie_word_embeddings": False,
+            "dflash_config": {
+                "block_size": 4,
+                "conv_group_size": 8,
+                "conv_kernel_size": 2,
+                "mask_token_id": VOCAB - 1,
+                "selector_rank": 8,
+                "selector_top_k": 4,
+                "target_layer_ids": [0, 2, 3],
+            },
+        }
+    )
+    mx.random.seed(seed)
+    draft = DFlash2DraftModel(config)
+    draft.load_weights(
+        [
+            (key, mx.random.normal(value.shape) * 0.02)
+            for key, value in tree_flatten(draft.parameters())
+        ],
+        strict=False,
+    )
+    draft.bind(SimpleNamespace(language_model=target))
+    mx.eval(draft.parameters())
+    return dd.DFlashDrafter(draft, block_size=4, source_path="tiny")
+
+
+@pytest.mark.usefixtures("glm5_fused_decode")
+def test_block_drafter_generation_matches_plain_decode(monkeypatch):
+    """GLM-5.3 runs a DFlash block drafter through the batched MTP loop:
+    multi-row verify blocks roll back and the tokens equal plain decode."""
+    _, language = _runtime()
+    assert bg.apply()
+    make_mask = ArraysCache.make_mask
+
+    def unpadded(self, n):
+        pad = self.left_padding
+        if pad is not None and self.lengths is None and pad.size == 1 and pad.item() <= 0:
+            return None
+        return make_mask(self, n)
+
+    monkeypatch.setattr(ArraysCache, "make_mask", unpadded)
+    monkeypatch.setattr(mlx_lm_mtp, "_MTP_ACTIVE", True)
+    prompt = [
+        int(v) for v in mx.random.randint(0, VOCAB, (300,), key=mx.random.key(5)).tolist()
+    ]
+    plain = _generate(_model(5, KDA_BITS["8-bit/5-bit"]), prompt, 24, True, False)
+
+    model = _model(5, KDA_BITS["8-bit/5-bit"])
+    drafter = _glm_drafter(model, seed=9)
+    dd.attach_drafter(model, drafter)
+    widths = []
+    rollback = language.LanguageModel.rollback_speculative_cache
+
+    def counted(self, caches, gdn_states, accepted, block_size):
+        widths.append(int(block_size))
+        return rollback(self, caches, gdn_states, accepted, block_size)
+
+    monkeypatch.setattr(language.LanguageModel, "rollback_speculative_cache", counted)
+    drafted = _generate(model, prompt, 24, True, True)
+    assert drafted == plain
+    assert 4 in widths, widths

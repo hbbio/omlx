@@ -29,6 +29,31 @@ assert os.environ['OTEL_SDK_DISABLED'] == 'true'
 from huggingface_hub import constants
 assert constants.HF_HUB_DISABLE_TELEMETRY
 import omlx.server
+from omlx.patches.qwen35_yarn import apply_qwen35_yarn_patch
+apply_qwen35_yarn_patch()
+
+# Exercise text prefill, batching, and decode without any optional packages.
+from mlx_lm.generate import BatchGenerator
+from mlx_lm.models.llama import Model, ModelArgs
+model = Model(ModelArgs(
+    model_type='llama', hidden_size=32, num_hidden_layers=1,
+    intermediate_size=64, num_attention_heads=4,
+    rms_norm_eps=1e-5, vocab_size=64,
+))
+generator = BatchGenerator(model, max_tokens=2)
+try:
+    uids = generator.insert([[1, 2, 3], [4, 5]])
+    responses = []
+    for _ in range(5):
+        batch = generator.next_generated()
+        if not batch:
+            break
+        responses.extend(batch)
+    assert len(responses) == 4, responses
+    assert {response.uid for response in responses} == set(uids)
+finally:
+    generator.close()
+
 import asyncio
 from omlx.engine.vlm import VLMBatchedEngine
 engine = object.__new__(VLMBatchedEngine)

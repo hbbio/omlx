@@ -3,8 +3,8 @@ class Omlx < Formula
 
   desc "LLM inference server optimized for Apple Silicon"
   homepage "https://github.com/jundot/omlx"
-  url "https://github.com/jundot/omlx/archive/refs/tags/v0.6.4.tar.gz"
-  sha256 "5d8781c0c6a782e9b90f071d36b0d8dbe6161fafb5fef5e3f0d8ac71da214b70"
+  url "https://github.com/jundot/omlx/archive/refs/tags/v0.7.1rc1.tar.gz"
+  sha256 "dc55b7a83054bf0cfc4e635ae1906414c7d1eeb10fec25248abe9000da3c263a"
   license "Apache-2.0"
 
   head "https://github.com/jundot/omlx.git", branch: "main"
@@ -32,7 +32,11 @@ class Omlx < Formula
     working_dir var
     log_path var/"log/omlx.log"
     error_log_path var/"log/omlx.log"
-    environment_variables PATH: std_service_path_env
+    # launchd KeepAlive respawns the process, so it is a supervisor in the
+    # sense /admin/api/server/restart expects: declare it so the dashboard
+    # restart button works under `brew services` instead of returning 503.
+    environment_variables PATH: std_service_path_env,
+                          OMLX_SUPERVISED: "launchd"
   end
 
   def install
@@ -67,6 +71,18 @@ class Omlx < Formula
     uv_flags += ["--extra", "grammar"] if build.with?("grammar")
 
     if build.with?("custom-kernel")
+      # `metal` ships with Xcode, not the Command Line Tools.
+      unless quiet_system("/usr/bin/xcrun", "-f", "metal")
+        odie <<~EOS
+          --with-custom-kernel requires the Metal compiler, but `xcrun -f metal` found none.
+          It ships with full Xcode, and on current Xcode versions is a separate component:
+
+            xcodebuild -downloadComponent MetalToolchain
+
+          Otherwise install omlx without the custom kernels: brew install omlx
+        EOS
+      end
+
       kernel_sources = CUSTOM_KERNELS.map do |kernel|
         buildpath/"omlx/custom_kernels/#{kernel}/csrc"
       end
@@ -207,6 +223,9 @@ class Omlx < Formula
 
   test do
     assert_match version.to_s, shell_output("#{bin}/omlx --version")
+    system libexec/"bin/python", "-c",
+           "import pathlib, omlx_web; " \
+           "assert (pathlib.Path(omlx_web.__file__).parent / 'templates/dashboard.html').is_file()"
     verify_custom_kernels(libexec/"bin/python") if build.with?("custom-kernel")
   end
 end

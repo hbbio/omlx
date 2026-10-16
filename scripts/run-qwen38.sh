@@ -26,9 +26,6 @@ export HF_HUB_DISABLE_TELEMETRY=1
 export HF_HUB_DISABLE_UPDATE_CHECK=1
 export DO_NOT_TRACK=1
 export OTEL_SDK_DISABLED=true
-export OMLX_QWEN35_ANE_PREFILL=1
-export OMLX_GDN_KERNEL=1
-export OMLX_GDN_IMPL=blocked_seq
 
 .venv/bin/python - <<'PY'
 import importlib.util
@@ -42,7 +39,7 @@ model_id = "scottlowry--Qwen3.8-27B-oQ4e-mtp"
 config = json.loads(Path(".omlx-qwen38/model_settings.json").read_text())
 if config["version"] != SETTINGS_VERSION:
     raise SystemExit("Unsupported model settings version; see docs/run-qwen38.md.")
-settings = ModelSettings(**config["models"][model_id])
+settings = ModelSettings.from_dict(config["models"][model_id])
 validate_ane_prefill(settings.to_dict(), "qwen3_5")
 if not 1 <= settings.max_context_window <= 262144:
     raise SystemExit("Context must be between 1 and 262144 tokens.")

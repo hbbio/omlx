@@ -108,6 +108,8 @@ def _make_batch(proc, emitted: int, k: int):
         mtp_forward=mtp_forward,
     )
     buf = _Counter()
+    # Each cycle continues after the tokens already emitted.
+    buf.update_and_fetch(mx.array([FILL] * emitted, dtype=mx.int32))
     batch = SimpleNamespace(
         model=model,
         prompt_cache=[cache],
@@ -118,8 +120,7 @@ def _make_batch(proc, emitted: int, k: int):
         _token_context=[buf],
         max_tokens=[10000],
         _num_tokens=[emitted],
-        _matcher_states=[0],
-        state_machines=[SimpleNamespace(match=lambda state, token: (0, None, None))],
+        _matchers=[SimpleNamespace(advance=lambda token: False)],
     )
     return batch, cache, buf
 

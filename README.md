@@ -10,10 +10,6 @@
 <p align="center"><b>LLM inference, optimized for your Mac</b><br>Continuous batching and tiered KV caching, run from your terminal.</p>
 
 <p align="center">
-<a href="https://www.buymeacoffee.com/jundot"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40"></a>
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
   <img src="https://img.shields.io/badge/python-3.11--3.13-green" alt="Python 3.11-3.13">
   <img src="https://img.shields.io/badge/platform-Apple%20Silicon-black?logo=apple" alt="Apple Silicon">
@@ -64,7 +60,7 @@ The default install supports text inference. Add only the features you need in t
 uv sync --locked --no-dev --extra vision --extra embeddings
 ```
 
-Available extras: `vision` (also needed for TurboQuant KV cache and VLM MTP), `embeddings`, `speculative` (DFlash), `audio`, `documents`, `web-search`, `mcp`, `cluster`, `grammar`, `modelscope`, and `paroquant`. Grammar and audio add large dependency trees. The native macOS app and DMG packaging have been removed; launch the server from the CLI. The optional browser admin/chat interface remains available.
+Available extras: `vision` (also needed for TurboQuant KV cache, VLM MTP, and DFlash drafters), `embeddings`, `audio`, `documents`, `web-search`, `mcp`, `cluster`, `grammar`, `modelscope`, and `paroquant`. Grammar and audio add large dependency trees. The native macOS app and DMG packaging have been removed; launch the server from the CLI. The browser admin/chat interface remains available; use `omlx serve --headless` for an API-only server. DFlash now runs inside the standard engines and uses the `vision` extra.
 
 Optional native kernels for GLM-5.2, MiniMax M3, and Qwen3.5 require full Xcode with the Metal toolchain:
 
@@ -136,13 +132,13 @@ headroom-aware execution tuning, activation, and a live shard/performance map
 on both Macs. Interactive, balanced, and throughput profiles expose coalesced
 batching, prompt-cache affinity, rotating-KV limits, Ring connection tuning,
 and a capability-gated experimental token-only output path. See
-[Distributed inference across Macs](docs/distributed-cluster.md) for setup,
+[Distributed inference across Macs](docs/experimental/distributed-cluster.md) for setup,
 security boundaries, current limitations, and the physical-hardware validation
 checklist.
 
 ### Vision-Language Models
 
-Run VLMs with the same continuous batching and tiered KV cache stack as text LLMs. Supports multi-image chat, base64/URL/file image inputs, and tool calling with vision context. OCR models (DeepSeek-OCR, DOTS-OCR, GLM-OCR) are auto-detected with optimized prompts.
+Run VLMs with the same continuous batching and tiered KV cache stack as text LLMs. Supports multi-image chat, base64/URL/file image inputs, and tool calling with vision context. MiMo V2.6 checkpoints with bundled sidecars also accept sampled-frame video and 24 kHz audio. Qwen3.5, Qwen3.6 and Qwen3.8 checkpoints (dense and MoE) accept native video input as base64 `video_url` / `input_video` data URIs; video needs OpenCV (`opencv-python-headless`). oQ conversion of official MiMo V2.6 checkpoints preserves image and audio support. OCR models (DeepSeek-OCR, DOTS-OCR, GLM-OCR) are auto-detected with optimized prompts.
 
 ### Tiered KV Cache (Hot + Cold)
 
@@ -161,7 +157,7 @@ Handles concurrent requests through mlx-lm's BatchGenerator. Max concurrent requ
 
 ### Claude Code Optimization
 
-Context scaling support for running smaller context models with Claude Code. Scales reported token counts so that auto-compact triggers at the right timing, and SSE keep-alive prevents read timeouts during long prefill.
+Runs smaller context models with Claude Code by reporting the model's real context window to auto-compact instead of scaling token counts, and SSE keep-alive prevents read timeouts during long prefill.
 
 ### Multi-Model Serving
 
@@ -179,6 +175,7 @@ Configure sampling parameters, chat template kwargs, TTL, model alias, model typ
 
 - **Model alias**: set a custom API-visible name. `/v1/models` returns the alias, and requests accept both the alias and directory name.
 - **Model type override**: manually set a model as LLM or VLM regardless of auto-detection.
+- **External engine**: serve Qwen3.8-27B and Qwen3.6-35B-A3B MLX checkpoints from your model directories with [Splash](https://github.com/incoai/splash)'s Metal engine in its own process (official build on M3 or later, Splash M1 on M1/M2). See [docs/Splash.md](docs/Splash.md).
 - **Profiles**: save named bundles of per-model settings and switch between them from the admin panel. A profile can optionally be exposed as its own model: `/v1/models` then also lists `<model>:<profile>` (e.g. `qwen3-8b:thinking`), which serves on the same engine as the base model with the profile's settings overlaid per request — no extra memory, no reload. When the base model has an alias, the exposed ID is advertised as `<alias>:<profile>`; the directory-name form keeps working, just like for the base model.
 
 <p align="center">
@@ -204,11 +201,13 @@ Search and download MLX models from HuggingFace directly in the admin dashboard.
 
 ### Integrations
 
-Set up OpenClaw, OpenCode, Codex, Hermes Agent, Copilot, and Pi directly from the admin dashboard with a single click. No manual config editing required.
+Set up OpenClaw, OpenCode, Codex, Hermes Agent, Copilot, Pi, Mistral Vibe, and DeepSeek Harness directly from the admin dashboard with a single click. No manual config editing required.
 
 <p align="center">
   <img src="docs/images/omlx_integrations.png" alt="oMLX Integrations" width="720">
 </p>
+
+Install [Mistral Vibe](https://github.com/mistralai/mistral-vibe) 2.26.0 or newer with `uv tool install mistral-vibe`, then run `omlx launch vibe` to select a local model, or `omlx launch vibe --model <model-id>`. Vibe's provider, model, API-key reference and context window are configured for that process through its `VIBE_*` environment overrides. Existing `config.toml`, `VIBE_HOME`, tool permissions and cloud configuration are preserved. Pass Vibe arguments after `--`, for example `omlx launch vibe --model <model-id> -- --resume`.
 
 ### Performance Benchmark
 
@@ -220,7 +219,7 @@ One-click benchmarking from the admin panel. Measures prefill (PP) and text gene
 
 ### API Compatibility
 
-Drop-in replacement for OpenAI and Anthropic APIs. Supports streaming usage stats (`stream_options.include_usage`), Anthropic adaptive thinking, and vision inputs (base64, URL).
+Drop-in replacement for OpenAI and Anthropic APIs. Supports streaming usage stats (`stream_options.include_usage`), llama.cpp-style prefill progress (`return_progress`), Anthropic adaptive thinking, and vision inputs (images as base64 or URL, video as base64).
 
 | Endpoint | Description |
 |----------|-------------|
@@ -229,7 +228,11 @@ Drop-in replacement for OpenAI and Anthropic APIs. Supports streaming usage stat
 | `POST /v1/messages` | Anthropic Messages API |
 | `POST /v1/embeddings` | Text embeddings |
 | `POST /v1/rerank` | Document reranking |
+| `POST /v1/systemone` | Typed decisions with decision models or chat models (TypeSafe System One) |
 | `GET /v1/models` | List available models |
+| `POST /tokenize`, `POST /detokenize` | vLLM-compatible tokenizer API (also under `/v1`) |
+
+The admin API for settings, models, downloads, quantization, and benchmarks takes the main API key as a Bearer token and also works in headless mode. See [Admin API](docs/admin-api.md).
 
 ### Tool Calling & Structured Output
 
@@ -248,6 +251,8 @@ Supports all function calling formats available in mlx-lm, JSON schema validatio
 | Longcat | `<longcat_tool_call>` |
 
 Models not listed above may still work if their chat template accepts `tools` and their output uses a recognized `<tool_call>` XML format. For tool-enabled streaming, assistant text is emitted incrementally while known tool-call control markup is suppressed from visible content; structured tool calls are emitted after parsing the completed turn.
+
+A bare JSON, EBNF, or regex grammar constrains the answer from the first generated token, so `thinking_budget` is ignored. Configure a compatible `reasoning_parser` to combine constrained output with a separate, budgeted reasoning phase.
 
 ## Models
 
@@ -269,8 +274,9 @@ Models are auto-detected by type. You can also download models directly from the
 | LLM | Any model supported by [mlx-lm](https://github.com/ml-explore/mlx-lm) |
 | VLM | Qwen3.5 Series, GLM-4V, Pixtral, and other [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) models |
 | OCR | DeepSeek-OCR, DOTS-OCR, GLM-OCR |
-| Embedding | BERT, BGE-M3, ModernBERT |
+| Embedding | BERT, BGE-M3, ModernBERT, EmbeddingGemma 2 |
 | Reranker | ModernBERT, XLM-RoBERTa |
+| Decision | Clef, Clef-Flash, OpenJev, Decision 3.0 (d3, d3-flash, d3-mini, d3-nano, d3-lite, d3-edge) |
 
 ## CLI Configuration
 
@@ -310,13 +316,18 @@ omlx serve --model-dir ~/models --api-key your-secret-key
 
 # Network access requires authentication
 OMLX_API_KEY=your-secret-key omlx serve --model-dir ~/models --host 0.0.0.0
+
+# Inference and admin APIs only, without the web UI (not saved to settings)
+omlx serve --model-dir ~/models --headless
 ```
 
-All settings can also be configured from the web admin panel at `/admin`. Settings are persisted to `~/.omlx/settings.json`, and CLI flags take precedence.
-Set the main API key before changing the server host to a LAN address or
-`0.0.0.0`, or save both settings together. oMLX refuses to start on any
-non-loopback address without an API key, and API key verification can only be
-skipped for loopback-only binds.
+The default SSD cache limit, `auto`, uses 50% of the sum of free disk space and existing SSD cache files, including GDN sidecars. The budget is refreshed during use and does not shrink simply because the cache grows or the server restarts. Other disk usage can change the budget. Set `--paged-ssd-cache-max-size 20GB` for a fixed limit.
+
+
+Most settings can also be configured from the web admin panel at `/admin`. Settings are persisted to `~/.omlx/settings.json`, and CLI flags take precedence.
+Set the main API key before changing the server host to a LAN address or `0.0.0.0`, or save both settings together. oMLX refuses to start on any non-loopback address without a main API key. "Disable all authentication" (`skip_api_key_verification`) turns off both inference and admin authentication, so it stays restricted to loopback-only binds.
+
+For keyless inference on a network bind, turn on "Allow inference without API key" in the web admin settings or the Security screen of the macOS app. It sets `auth.allow_unauthenticated_inference`, defaults to `false`, and applies without a restart. This allows anyone who can reach the server to use inference (including stored Responses and audio), MCP tools, and web search. Management endpoints still require the main API key or an admin login.
 
 <details>
 <summary>Architecture</summary>
@@ -328,7 +339,8 @@ FastAPI Server (OpenAI / Anthropic API)
     │   ├── BatchedEngine (LLMs, continuous batching)
     │   ├── VLMEngine (vision-language models)
     │   ├── EmbeddingEngine
-    │   └── RerankerEngine
+    │   ├── RerankerEngine
+    │   └── DecisionEngine
     │
     ├── ProcessMemoryEnforcer (total memory limit, TTL checks)
     │
@@ -345,12 +357,25 @@ FastAPI Server (OpenAI / Anthropic API)
 
 ## Development
 
+### Build commands
+
+| Command | What it does |
+|---|---|
+| `make install` | Editable install of the server and the web UI, then the native custom kernels |
+| `make install-no-kernels` | The same without the kernels, for machines without full Xcode |
+| `make mcp` | Add MCP (Model Context Protocol) support |
+| `make dev` | Same as `make install`, with dev tools (`make dev-no-kernels` skips the kernels) |
+| `make kernels` | Delete any built native custom kernels, compile them again in place, and check that each one loads |
+| `make web` | Rebuild the web UI CSS and normalize the translation files |
+
+The native custom kernels need full Xcode with the Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`).
+
 ### CLI Server
 
 ```bash
 git clone https://github.com/jundot/omlx.git
 cd omlx
-uv sync --locked --extra vision --extra embeddings --extra speculative --extra documents --extra web-search --extra cluster
+uv sync --locked --extra vision --extra embeddings --extra documents --extra web-search --extra cluster
 uv run --no-sync pytest -m "not slow and not integration"
 ```
 

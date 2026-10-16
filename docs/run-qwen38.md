@@ -19,7 +19,7 @@ the local Apple M3 Max with 96 GiB RAM and the already downloaded
 
 | Setting | Saved value |
 | --- | --- |
-| Lightning MTP | On; up to 3 draft tokens (the runtime adapts the count) |
+| Lightning MTP | On; adaptive, up to 4 draft tokens (the current Qwen 27B minimum ceiling) |
 | TurboQuant KV / SpecPrefill / DFlash | Off |
 | Qwen ANE prefill | On; fixed 0.53 MLP fraction, 2048-token blocks |
 | ANE topology | Single ANE for M3 Max; CPU sharing off |
@@ -60,6 +60,10 @@ vision`: this checkpoint uses the VLM engine for the requested optimized GDN
 prefill path, including text-only requests. This does not install a Mac UI.
 No other optional extras are needed for this profile.
 
+The template uses `mtp_adaptive_max_depth`; upstream removed the old
+`mtp_num_draft_tokens` setting. Existing runtime files still load through the
+server's settings parser, which ignores retired fields and uses current defaults.
+
 The check reads the Hugging Face cache with `local_files_only=True`, verifies
 the referenced weight shards exist, and checks for the ANE native symbol. It
 does not load the 27B model or prove ANE compilation will succeed. The cached
@@ -78,8 +82,9 @@ bash scripts/run-qwen38.sh
 Leave this terminal running; use Ctrl-C to stop. The model is pinned, so startup
 loads it and eagerly compiles the ANE programs. Allow time for compilation.
 The launcher enables offline Hugging Face access and disables its telemetry
-and update checks. It also sets `OMLX_QWEN35_ANE_PREFILL=1`,
-`OMLX_GDN_KERNEL=1`, and `OMLX_GDN_IMPL=blocked_seq`.
+and update checks. ANE prefill follows the saved model settings; supported
+GDN kernels are selected by the runtime. The old GDN/ANE environment switches
+were removed upstream and are no longer needed.
 
 Check startup logs for successful MTP initialization and nonzero compiled MLP
 and GDN procedure counts. Missing extensions cause the launcher to stop;
